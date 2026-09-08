@@ -11,33 +11,34 @@ const express = require('express')
 const { WebSocketServer } = require('ws')
 const gemsHistoryStore = require('./history')
 
-// El resolver DNS del sistema ha dado problemas de forma recurrente
-// (EAI_AGAIN al resolver widowmc.net, tanto aquí como en la conexión al
-// servidor de Minecraft). Forzamos a Node a usar DNS públicos en vez del
-// resolver por defecto de la máquina/ISP.
+// The system's DNS resolver has repeatedly caused problems (EAI_AGAIN when
+// resolving the server host, both here and when connecting to the
+// Minecraft server). We force Node to use public DNS instead of the
+// machine/ISP's default resolver.
 dns.setServers(['1.1.1.1', '8.8.8.8'])
 const webConfig = require('./webconfig')
 
-// Agente keep-alive compartido para las peticiones a api.widowmc.net: reutiliza
-// la conexión TCP/TLS entre peticiones para no tener que resolver DNS de nuevo
-// en cada llamada. Bajo ráfagas de peticiones concurrentes (varios bots pidiendo
-// gemas a la vez), hacer una resolución DNS por petición puede saturar el
-// resolver del sistema y provocar errores EAI_AGAIN aunque el DNS funcione bien
-// en general.
-const widowmcAgent = new https.Agent({ keepAlive: true, maxSockets: 4 })
+// Shared keep-alive agent for requests to the gems API: reuses the
+// TCP/TLS connection between requests so DNS doesn't need to be resolved
+// again on every call. Under bursts of concurrent requests (several bots
+// requesting gems at once), doing a DNS resolution per request can
+// overload the system resolver and cause EAI_AGAIN errors even when DNS
+// is otherwise working fine.
+const gemsApiAgent = new https.Agent({ keepAlive: true, maxSockets: 4 })
 
-// Carga (o recarga) config.js, limpiando antes la cache de require para poder
-// leer cambios en caliente sin reiniciar el proceso (si no, Node devolvería
-// siempre la versión ya cacheada). config.js unifica en un solo fichero las
-// cuentas, hotkeys, triggers y macros (antes repartidos en hotkeys.js/
-// triggers.js/macros.js separados).
+// Loads (or reloads) config.js, clearing the require cache first so
+// changes can be picked up on the fly without restarting the process (if
+// we didn't, Node would always return the already-cached version).
+// config.js unifies accounts, hotkeys, triggers, and macros in a single
+// file (previously split across separate hotkeys.js/triggers.js/
+// macros.js files).
 function loadConfigModule() {
   try {
     const fullPath = require.resolve('./config')
     delete require.cache[fullPath]
     return require(fullPath)
   } catch (err) {
-    output(`⚠ Error cargando config.js: ${err.message}`)
+    output(`⚠ Error loading config.js: ${err.message}`)
     return { accounts: [], hotkeys: [], triggers: [], macros: {} }
   }
 }
@@ -48,7 +49,7 @@ let hotkeysConfig = fullConfig.hotkeys || []
 let triggersConfig = fullConfig.triggers || []
 let macrosConfig = fullConfig.macros || {}
 
-// ─── Blindaje: que un error interno de una librería no tire abajo TODO el proceso ──
+// ─── Safety net: don't let an internal library error take down the whole process ──
 process.on('uncaughtException', (err) => {
   if (isKnownNoisyError(err)) return
   console.error(`[uncaughtException] ${err.message}`)
@@ -58,31 +59,31 @@ process.on('unhandledRejection', (err) => {
   console.error(`[unhandledRejection] ${err?.message || err}`)
 })
 
-// Bug conocido: algunos servidores mandan un scoreboard/tablist personalizado
-// (ej. "wtab_sb") que la librería mineflayer no reconoce. Es inofensivo, solo ruido.
+// Known bug: some servers send a custom scoreboard/tablist (e.g. "wtab_sb")
+// that the mineflayer library doesn't recognize. It's harmless, just noise.
 function isKnownNoisyError(err) {
   const msg = err?.message || String(err || '')
   return msg.includes('unknown objective')
 }
 
-// ─── Blindaje de raíz para el bug de scoreboard.js ("unknown objective") ────
-// El plugin interno de mineflayer (lib/plugins/scoreboard.js) registra un
-// listener sobre bot._client para los paquetes 'scoreboard_score' y
-// 'scoreboard_objective' que hace throw() si el servidor manda una
-// actualización para un objective que el bot no tiene registrado (algunos
-// servidores mandan tablists/scoreboards personalizados, ej. "wtab_sb", que
-// disparan esto). Ese throw ocurre dentro del propio listener del cliente de
-// protocolo, en medio de varias capas de streams internas, y a veces escapa
-// del process.on('uncaughtException') de más abajo antes de llegar a él,
-// tirando el proceso entero con el stack completo.
+// ─── Root-cause fix for the scoreboard.js bug ("unknown objective") ────────
+// mineflayer's internal plugin (lib/plugins/scoreboard.js) registers a
+// listener on bot._client for the 'scoreboard_score' and
+// 'scoreboard_objective' packets that throws if the server sends an update
+// for an objective the bot doesn't have registered (some servers send
+// custom tablists/scoreboards, e.g. "wtab_sb", that trigger this). That
+// throw happens inside the protocol client's own listener, in the middle
+// of several internal stream layers, and sometimes escapes the
+// process.on('uncaughtException') handler below before reaching it,
+// crashing the whole process with the full stack trace.
 //
-// La forma fiable de neutralizarlo es en el origen: quitamos temporalmente
-// los listeners que puso mineflayer para esos dos paquetes, y los volvemos a
-// poner envueltos en un try/catch que solo traga el error "unknown
-// objective" conocido (cualquier otro error se relanza tal cual, para no
-// esconder bugs distintos). Esto hay que hacerlo justo tras crear el bot,
-// antes de que llegue ningún paquete (createBot registra esos listeners de
-// forma síncrona).
+// The reliable way to neutralize it is at the source: we temporarily
+// remove the listeners mineflayer registered for those two packets, and
+// re-add them wrapped in a try/catch that only swallows the known "unknown
+// objective" error (any other error is re-thrown as-is, so we don't hide
+// unrelated bugs). This has to be done right after creating the bot,
+// before any packet arrives (createBot registers those listeners
+// synchronously).
 function patchNoisyScoreboardListeners(bot, id) {
   const packetNames = ['scoreboard_score', 'scoreboard_objective']
   for (const packetName of packetNames) {
@@ -94,16 +95,16 @@ function patchNoisyScoreboardListeners(bot, id) {
         try {
           fn(...args)
         } catch (err) {
-          if (isKnownNoisyError(err)) return // bug conocido, inofensivo: se ignora
-          log(id, `[Error interno scoreboard] ${err.message}`)
+          if (isKnownNoisyError(err)) return // known, harmless bug: ignored
+          log(id, `[Internal scoreboard error] ${err.message}`)
         }
       })
     }
   }
 }
 
-// La propia librería hace console.error(err) internamente al capturar ese bug;
-// lo filtramos aquí para que no ensucie la terminal.
+// The library itself does console.error(err) internally when it catches
+// that bug; we filter it here so it doesn't clutter the terminal.
 const originalConsoleError = console.error
 console.error = (...args) => {
   const first = args[0]
@@ -111,15 +112,17 @@ console.error = (...args) => {
   originalConsoleError(...args)
 }
 
-// ─── Discord (aviso de desconexión) ─────────────────────────────────────────
-const DISCORD_WEBHOOK_URL = 'https://discord.com/api/webhooks/1521603965668556830/lRVJFViabQyYgxqJh1_eeWgE3TW7-vhyssbzIswGzDkCmDsPyRILSQ8UYai6xBccG5Cf'
-const DISCORD_USER_ID = '722575528980119574'
+// ─── Discord (disconnect notifications) ─────────────────────────────────────
+// Set these to your own webhook URL and user ID to get a Discord ping when
+// an account disconnects. Left empty by default (no notification is sent).
+const DISCORD_WEBHOOK_URL = ''
+const DISCORD_USER_ID = ''
 
 function sendDiscordWebhook(id, reason) {
   return new Promise((resolve) => {
     if (!DISCORD_WEBHOOK_URL) return resolve()
     const data = JSON.stringify({
-      content: `<@${DISCORD_USER_ID}> ⚠️ La cuenta **${id}** se ha desconectado.\n**Motivo:** ${reason}`,
+      content: `<@${DISCORD_USER_ID}> ⚠️ Account **${id}** has disconnected.\n**Reason:** ${reason}`,
       allowed_mentions: { users: [DISCORD_USER_ID] },
     })
     const req = https.request(
@@ -133,14 +136,14 @@ function sendDiscordWebhook(id, reason) {
   })
 }
 
-// ─── Estado ────────────────────────────────────────────────────────────────
+// ─── State ────────────────────────────────────────────────────────────────
 const sessions = new Map() // id -> { cfg, bot, autoClick }
 let activeId = accounts[0]?.id || null
 
-// ─── Log de chat a fichero ───────────────────────────────────────────────────
-// Como todas las cuentas reciben el mismo chat del server (es un broadcast),
-// solo hace falta guardarlo una vez: usamos la primera cuenta de config.js
-// como "fuente" del log para no duplicar líneas.
+// ─── Chat log to file ───────────────────────────────────────────────────────
+// Since every account receives the same server chat (it's a broadcast),
+// we only need to save it once: we use the first account in config.js as
+// the "source" for the log so lines aren't duplicated.
 const PRIMARY_ACCOUNT_ID = accounts[0]?.id || null
 const CHATLOG_DIR = path.join(__dirname, 'chatlog')
 let chatLogStream = null
@@ -153,18 +156,18 @@ function initChatLog() {
   try {
     if (!fs.existsSync(CHATLOG_DIR)) fs.mkdirSync(CHATLOG_DIR, { recursive: true })
     const now = new Date()
-    // Formato de fichero: dia-mes-año-hora de inicio.txt (con guiones en vez de
-    // barras/dos puntos porque esos caracteres no son válidos en nombres de
-    // fichero en Windows).
+    // File name format: day-month-year-start time.txt (with dashes instead
+    // of slashes/colons because those characters aren't valid in file
+    // names on Windows).
     const fileName =
       `${pad2(now.getDate())}-${pad2(now.getMonth() + 1)}-${now.getFullYear()}` +
       `-${pad2(now.getHours())}-${pad2(now.getMinutes())}-${pad2(now.getSeconds())}.txt`
     const filePath = path.join(CHATLOG_DIR, fileName)
     chatLogStream = fs.createWriteStream(filePath, { flags: 'a' })
-    chatLogStream.on('error', (err) => output(`[chatlog] Error escribiendo el log: ${err.message}`))
-    output(`[chatlog] Guardando chat en chatlog/${fileName}`)
+    chatLogStream.on('error', (err) => output(`[chatlog] Error writing the log: ${err.message}`))
+    output(`[chatlog] Saving chat to chatlog/${fileName}`)
   } catch (err) {
-    output(`[chatlog] No se pudo crear el log: ${err.message}`)
+    output(`[chatlog] Could not create the log: ${err.message}`)
   }
 }
 
@@ -175,7 +178,7 @@ function writeChatLog(text) {
   chatLogStream.write(`[${ts}] ${text}\n`)
 }
 
-// ─── Panel web: clientes WebSocket conectados y helpers de difusión ────────
+// ─── Web panel: connected WebSocket clients and broadcast helpers ─────────
 const wsClients = new Set()
 function broadcast(obj) {
   const data = JSON.stringify(obj)
@@ -203,25 +206,25 @@ function broadcastStatus() {
 const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
 const isTTY = !!process.stdout.isTTY
 
-// 'chat'  → la línea de abajo es el prompt normal de comandos (gestionado por readline)
-// 'menu'  → la línea de abajo es el menú interactivo de cuentas (gestionado a mano, con
-//           prioridad total sobre el teclado: readline se desconecta mientras está abierto)
+// 'chat'  → the bottom line is the normal command prompt (managed by readline)
+// 'menu'  → the bottom line is the interactive account menu (managed by hand,
+//           with total priority over the keyboard: readline is disconnected while it's open)
 let mode = 'chat'
 let menuState = null
 let lastMenuLineCount = 0
 
 function prompt() {
-  if (mode === 'menu') return // la línea reservada la pinta el menú mientras esté abierto
+  if (mode === 'menu') return // the menu paints its own reserved line while it's open
   rl.setPrompt(`[${activeId || '-'}] > `)
   rl.prompt()
 }
 
-// ─── Salida "segura": nunca corta lo que el usuario está escribiendo ───────
-// Toda impresión de chat/logs pasa por aquí. En 'chat' usamos el redibujado
-// interno de readline (borra la línea de comandos, imprime el mensaje arriba,
-// y vuelve a pintar exactamente lo que había escrito). En 'menu' hacemos lo
-// mismo pero a mano, porque el bloque del menú ocupa varias líneas y readline
-// no sabe nada de él.
+// ─── "Safe" output: never cuts off what the user is typing ───────────────
+// All chat/log printing goes through here. In 'chat' mode we use readline's
+// internal redraw (clears the command line, prints the message above, and
+// repaints exactly what had been typed). In 'menu' mode we do the same by
+// hand, because the menu block spans several lines and readline knows
+// nothing about it.
 function output(text) {
   if (!isTTY) { process.stdout.write(text + '\n'); return }
   if (mode === 'menu') {
@@ -242,12 +245,12 @@ function eraseLines(count) {
   return s
 }
 
-// ─── Menú interactivo de cuentas (atajo: Ctrl+T, flechas + Enter) ──────────
+// ─── Interactive account menu (shortcut: Ctrl+T, arrows + Enter) ──────────
 function buildMenuLines() {
-  const lines = ['┌─── Cambiar de cuenta  (↑/↓ mover · Enter seleccionar · Esc cancelar) ───']
+  const lines = ['┌─── Switch account  (↑/↓ move · Enter select · Esc cancel) ───']
   accounts.forEach((cfg, i) => {
     const s = sessions.get(cfg.id)
-    const state = s?.bot ? 'conectado' : 'desconectado'
+    const state = s?.bot ? 'connected' : 'disconnected'
     const activeMark = cfg.id === activeId ? '●' : ' '
     const row = `${activeMark} ${cfg.id.padEnd(10)} ${cfg.username.padEnd(20)} [${state}]`
     lines.push(i === menuState.selected ? `➤ \x1b[7m${row}\x1b[0m` : `  ${row}`)
@@ -273,10 +276,9 @@ function openMenu() {
   const startIdx = Math.max(0, accounts.findIndex(a => a.id === activeId))
   menuState = { selected: startIdx }
 
-  // El menú tiene prioridad absoluta: mientras esté abierto, ninguna tecla
-  // llega al chat/readline. Nos quedamos con TODOS los listeners de keypress
-  // que hubiera puestos (readline + nuestro propio atajo Ctrl+T) y los
-  // restauramos al cerrar.
+  // The menu has absolute priority: while it's open, no key reaches
+  // chat/readline. We keep ALL keypress listeners that were registered
+  // (readline + our own Ctrl+T shortcut) and restore them when it closes.
   const previousListeners = process.stdin.listeners('keypress').slice()
   previousListeners.forEach((fn) => process.stdin.removeListener('keypress', fn))
 
@@ -295,9 +297,9 @@ function openMenu() {
       selectAccount(chosen)
     } else if (key.name === 'escape') {
       closeMenu(previousListeners, menuKeyHandler)
-      output('Cambio de cuenta cancelado.')
+      output('Account switch cancelled.')
     }
-    // cualquier otra tecla se ignora: el chat no puede "colarse" mientras el menú está abierto
+    // any other key is ignored: chat input can't "sneak in" while the menu is open
   }
   process.stdin.on('keypress', menuKeyHandler)
 }
@@ -314,17 +316,17 @@ function closeMenu(previousListeners, menuKeyHandler) {
 
 function selectAccount(cfg) {
   activeId = cfg.id
-  output(`► Cuenta activa: ${activeId} (${cfg.username})`)
+  output(`► Active account: ${activeId} (${cfg.username})`)
   broadcastStatus()
   if (!sessions.get(cfg.id)?.bot) {
-    output('No está conectada, conectando...')
+    output('Not connected, connecting...')
     attemptConnect(cfg)
   }
 }
 
-// ─── Hotkeys configurables (sección "hotkeys" de config.js) ───────────────
-// Normaliza un combo tipo "Ctrl+Shift+G" / "ctrl + g" a una forma canónica
-// comparable: modificadores ordenados alfabéticamente + nombre de tecla.
+// ─── Configurable hotkeys ("hotkeys" section of config.js) ───────────────
+// Normalizes a combo like "Ctrl+Shift+G" / "ctrl + g" into a canonical,
+// comparable form: modifiers sorted alphabetically + key name.
 function normalizeCombo(str) {
   return String(str || '')
     .toLowerCase()
@@ -335,11 +337,11 @@ function normalizeCombo(str) {
     .join('+')
 }
 
-// Convierte el evento keypress de readline/Node al mismo formato canónico.
+// Converts readline/Node's keypress event to the same canonical format.
 function keyEventToCombo(key) {
   const parts = []
   if (key.ctrl) parts.push('ctrl')
-  if (key.meta) parts.push('alt') // Node reporta Alt como "meta"
+  if (key.meta) parts.push('alt') // Node reports Alt as "meta"
   if (key.shift) parts.push('shift')
   const name = key.name || key.sequence
   if (!name) return null
@@ -352,15 +354,15 @@ function loadHotkeys() {
   hotkeyMap.clear()
   for (const hk of hotkeysConfig) {
     if (!hk || !hk.combo || !hk.target || !hk.command) {
-      output(`⚠ Hotkey inválida en config.js (faltan campos): ${JSON.stringify(hk)}`)
+      output(`⚠ Invalid hotkey in config.js (missing fields): ${JSON.stringify(hk)}`)
       continue
     }
     const combo = normalizeCombo(hk.combo)
     if (!combo.includes('ctrl') && !combo.includes('alt') && !/^f\d{1,2}$/.test(combo)) {
-      output(`⚠ Hotkey "${hk.combo}" no lleva ctrl/alt ni es una tecla de función (f1-f12): también se escribirá en el prompt al pulsarla.`)
+      output(`⚠ Hotkey "${hk.combo}" doesn't include ctrl/alt and isn't a function key (f1-f12): it will also be typed into the prompt when pressed.`)
     }
     if (hotkeyMap.has(combo)) {
-      output(`⚠ Hotkey duplicada, se ignora la repetida: ${hk.combo}`)
+      output(`⚠ Duplicate hotkey, ignoring the repeat: ${hk.combo}`)
       continue
     }
     hotkeyMap.set(combo, hk)
@@ -368,25 +370,25 @@ function loadHotkeys() {
 }
 loadHotkeys()
 
-// Recarga la sección "hotkeys" de config.js en caliente (sin reiniciar el
-// proceso): vuelve a leer el fichero del disco (saltándose la cache de
-// require) y reconstruye el mapa.
+// Hot-reloads the "hotkeys" section of config.js (without restarting the
+// process): re-reads the file from disk (bypassing the require cache) and
+// rebuilds the map.
 function reloadHotkeys() {
   fullConfig = loadConfigModule()
   hotkeysConfig = fullConfig.hotkeys || []
   loadHotkeys()
-  output(`↻ config.js recargado (${hotkeyMap.size} hotkey(s)).`)
+  output(`↻ config.js reloaded (${hotkeyMap.size} hotkey(s)).`)
 }
 
 function listHotkeys() {
-  if (!hotkeyMap.size) { output('No hay hotkeys configuradas (sección "hotkeys" de config.js vacía).'); return }
+  if (!hotkeyMap.size) { output('No hotkeys configured (the "hotkeys" section of config.js is empty).'); return }
   const lines = [...hotkeyMap.values()].map(
     (hk) => `  ${hk.combo.padEnd(16)} → [${hk.target}] ${hk.command}`
   )
-  output('Hotkeys configuradas:\n' + lines.join('\n'))
+  output('Configured hotkeys:\n' + lines.join('\n'))
 }
 
-// Ejecuta un comando sobre el/los destino(s) de una hotkey ('all' | 'active' | id de cuenta).
+// Runs a command on the target(s) of a hotkey ('all' | 'active' | account id).
 async function runOnTarget(target, command) {
   if (target === 'all') {
     for (const s of sessions.values()) {
@@ -397,19 +399,19 @@ async function runOnTarget(target, command) {
   if (target === 'active') {
     const s = sessions.get(activeId)
     if (s?.bot) await runCommand(s, command)
-    else output('[Hotkey] No hay cuenta activa conectada.')
+    else output('[Hotkey] No active account connected.')
     return
   }
   const s = sessions.get(target)
   if (s?.bot) await runCommand(s, command)
-  else output(`[Hotkey] Cuenta ${target} no conectada.`)
+  else output(`[Hotkey] Account ${target} not connected.`)
 }
 
-// ─── Recarga en caliente al guardar config.js ──────────────────────────────
-// Vigila el fichero y, cuando cambia en disco, lo recarga automáticamente sin
-// tener que reiniciar el proceso ni escribir ningún comando. Con debounce
-// porque muchos editores generan varios eventos de "cambio" por cada guardado
-// (escriben a un fichero temporal y luego renombran).
+// ─── Hot-reload when saving config.js ──────────────────────────────────────
+// Watches the file and, when it changes on disk, reloads it automatically
+// without having to restart the process or type any command. Debounced
+// because many editors generate several "change" events per save (they
+// write to a temp file and then rename it).
 function watchConfigReload(filename, reloadFn) {
   let timer = null
   try {
@@ -418,12 +420,12 @@ function watchConfigReload(filename, reloadFn) {
       timer = setTimeout(reloadFn, 200)
     })
   } catch {
-    // El fichero no existe todavía (es opcional): no hay nada que vigilar
-    // hasta que se cree; en ese caso hará falta un /reload manual o reiniciar.
+    // The file doesn't exist yet (it's optional): there's nothing to watch
+    // until it's created; a manual /reload or restart is needed until then.
   }
 }
 
-// Devuelve true si la tecla coincidía con una hotkey (y ya se ha lanzado la acción).
+// Returns true if the key matched a hotkey (and the action has already been fired).
 async function handleHotkeyPress(key) {
   const combo = keyEventToCombo(key)
   if (!combo) return false
@@ -434,18 +436,18 @@ async function handleHotkeyPress(key) {
   return true
 }
 
-// ─── Triggers de chat configurables (sección "triggers" de config.js) ─────
-// Igual que las hotkeys, pero se disparan al LEER en el chat del servidor un
-// mensaje que coincide con cierto texto, en vez de al pulsar una combinación.
-// "match" admite texto plano (coincide si el mensaje lo CONTIENE, sin mayúsculas/
-// minúsculas) o una regex escrita como '/patron/flags'.
+// ─── Configurable chat triggers ("triggers" section of config.js) ─────
+// Same as hotkeys, but they fire when a message matching certain text is
+// READ from the server's chat, instead of when a key combo is pressed.
+// "match" accepts plain text (matches if the message CONTAINS it,
+// case-insensitive) or a regex written as '/pattern/flags'.
 function compileTriggerMatch(match) {
   const str = String(match || '')
   const m = str.match(/^\/(.*)\/([a-z]*)$/i)
   if (m) {
     try { return new RegExp(m[1], m[2]) } catch { return null }
   }
-  return str // texto plano
+  return str // plain text
 }
 
 const triggerList = []
@@ -453,12 +455,12 @@ function loadTriggers() {
   triggerList.length = 0
   triggersConfig.forEach((tr) => {
     if (!tr || !tr.match || !tr.target || !tr.command) {
-      output(`⚠ Trigger inválido en config.js (faltan campos): ${JSON.stringify(tr)}`)
+      output(`⚠ Invalid trigger in config.js (missing fields): ${JSON.stringify(tr)}`)
       return
     }
     const compiled = compileTriggerMatch(tr.match)
     if (compiled === null) {
-      output(`⚠ Trigger con regex inválida en config.js: ${tr.match}`)
+      output(`⚠ Trigger with invalid regex in config.js: ${tr.match}`)
       return
     }
     triggerList.push({ ...tr, _compiled: compiled, _lastFired: new Map() })
@@ -466,20 +468,20 @@ function loadTriggers() {
 }
 loadTriggers()
 
-// Recarga la sección "triggers" de config.js en caliente (sin reiniciar el proceso).
+// Hot-reloads the "triggers" section of config.js (without restarting the process).
 function reloadTriggers() {
   fullConfig = loadConfigModule()
   triggersConfig = fullConfig.triggers || []
   loadTriggers()
-  output(`↻ config.js recargado (${triggerList.length} trigger(s)).`)
+  output(`↻ config.js reloaded (${triggerList.length} trigger(s)).`)
 }
 
 function listTriggers() {
-  if (!triggerList.length) { output('No hay triggers de chat configurados (sección "triggers" de config.js vacía).'); return }
+  if (!triggerList.length) { output('No chat triggers configured (the "triggers" section of config.js is empty).'); return }
   const lines = triggerList.map(
     (tr) => `  ${String(tr.match).padEnd(28)} → [${tr.target}] ${tr.command}`
   )
-  output('Triggers de chat configurados:\n' + lines.join('\n'))
+  output('Configured chat triggers:\n' + lines.join('\n'))
 }
 
 function textMatchesTrigger(text, tr) {
@@ -487,8 +489,8 @@ function textMatchesTrigger(text, tr) {
   return text.toLowerCase().includes(tr._compiled.toLowerCase())
 }
 
-// Se llama con el texto de chat ya limpio de colores y con la config (cfg) de
-// la cuenta que lo recibió, para poder resolver target: 'self'.
+// Called with the chat text already stripped of color codes, and the
+// config (cfg) of the account that received it, so 'self' can be resolved.
 async function handleChatTriggers(cfg, text) {
   const now = Date.now()
   for (const tr of triggerList) {
@@ -503,14 +505,14 @@ async function handleChatTriggers(cfg, text) {
   }
 }
 
-// ─── Macros de tienda configurables (sección "macros" de config.js) ───────
-// Cada macro define un comando tipo "/nombre <numero> [delayMs]" que:
-//   1. Manda un comando de chat que abre una ventana (ej. "/gemas")
-//   2. Espera a que el servidor abra esa ventana
-//   3. Hace <numero> clicks en un slot fijo, con un delay entre cada click
-// Formato de la sección "macros" de config.js:
+// ─── Configurable shop macros ("macros" section of config.js) ───────────
+// Each macro defines a command like "/name <number> [delayMs]" that:
+//   1. Sends a chat command that opens a window (e.g. "/gemas")
+//   2. Waits for the server to open that window
+//   3. Performs <number> clicks on a fixed slot, with a delay between each
+// Format of the "macros" section of config.js:
 //   macros: {
-//     casco: { openCommand: '/gemas', slot: 11 },
+//     helmet: { openCommand: '/gemas', slot: 11 },
 //   }
 const DEFAULT_MACRO_DELAY_MS = 350
 const DEFAULT_MACRO_WINDOW_TIMEOUT_MS = 8000
@@ -520,7 +522,7 @@ function loadMacros() {
   macroMap.clear()
   for (const [name, def] of Object.entries(macrosConfig || {})) {
     if (!def || !def.openCommand || typeof def.slot !== 'number') {
-      output(`⚠ Macro inválido en config.js (faltan campos "openCommand"/"slot"): ${name}`)
+      output(`⚠ Invalid macro in config.js (missing "openCommand"/"slot" fields): ${name}`)
       continue
     }
     macroMap.set(name.toLowerCase(), {
@@ -530,35 +532,35 @@ function loadMacros() {
       button: def.button === 'right' ? 'right' : 'left',
       delayMs: typeof def.delayMs === 'number' ? def.delayMs : DEFAULT_MACRO_DELAY_MS,
       windowTimeoutMs: typeof def.windowTimeoutMs === 'number' ? def.windowTimeoutMs : DEFAULT_MACRO_WINDOW_TIMEOUT_MS,
-      closeAfter: def.closeAfter !== false, // por defecto true: cierra el menú al terminar
+      closeAfter: def.closeAfter !== false, // defaults to true: closes the menu when done
     })
   }
 }
 loadMacros()
 
-// Recarga la sección "macros" de config.js en caliente (sin reiniciar el proceso).
+// Hot-reloads the "macros" section of config.js (without restarting the process).
 function reloadMacros() {
   fullConfig = loadConfigModule()
   macrosConfig = fullConfig.macros || {}
   loadMacros()
-  output(`↻ config.js recargado (${macroMap.size} macro(s)).`)
+  output(`↻ config.js reloaded (${macroMap.size} macro(s)).`)
 }
 
 function listMacros() {
-  if (!macroMap.size) { output('No hay macros de tienda configurados (sección "macros" de config.js vacía).'); return }
+  if (!macroMap.size) { output('No shop macros configured (the "macros" section of config.js is empty).'); return }
   const lines = [...macroMap.values()].map(
-    (m) => `  /${m.name.padEnd(12)} <numero> [delayMs]  → ${m.openCommand}  slot ${m.slot} (click ${m.button}, delay por defecto ${m.delayMs}ms, ${m.closeAfter ? 'cierra al terminar' : 'no cierra al terminar'})`
+    (m) => `  /${m.name.padEnd(12)} <number> [delayMs]  → ${m.openCommand}  slot ${m.slot} (click ${m.button}, default delay ${m.delayMs}ms, ${m.closeAfter ? 'closes when done' : 'does not close when done'})`
   )
-  output('Macros de tienda configurados:\n' + lines.join('\n'))
+  output('Configured shop macros:\n' + lines.join('\n'))
 }
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-// Espera a que el bot reciba el próximo evento 'windowOpen' (ej. la tienda
-// abriéndose tras mandar "/gemas"). Si el servidor no abre nada a tiempo,
-// rechaza con un timeout para no dejar el macro colgado para siempre.
+// Waits for the bot to receive the next 'windowOpen' event (e.g. the shop
+// opening after sending "/gemas"). If the server doesn't open anything in
+// time, it rejects with a timeout so the macro doesn't hang forever.
 function waitForWindowOpen(bot, timeoutMs) {
   return new Promise((resolve, reject) => {
     let done = false
@@ -572,81 +574,82 @@ function waitForWindowOpen(bot, timeoutMs) {
       if (done) return
       done = true
       bot.removeListener('windowOpen', onOpen)
-      reject(new Error('timeout esperando a que se abriera la ventana'))
+      reject(new Error('timeout waiting for the window to open'))
     }, timeoutMs)
     bot.once('windowOpen', onOpen)
   })
 }
 
-// Ejecuta un macro de tienda completo: abre la ventana, espera a que cargue,
-// y hace los clicks pedidos en el slot configurado con delay entre cada uno.
+// Runs a full shop macro: opens the window, waits for it to load, and
+// performs the requested clicks on the configured slot with a delay
+// between each one.
 async function runBuyMacro(session, macro, times, delayMs) {
   const { bot, cfg } = session
 
-  // Si ya había una ventana abierta de antes, la cerramos: si no, el próximo
-  // 'windowOpen' podría no llegar (algunos servidores no reabren si ya está
-  // abierta) y confundiríamos los slots de una ventana vieja con los de la tienda.
+  // If a window was already open from before, close it: otherwise the next
+  // 'windowOpen' might not arrive (some servers don't reopen if one is
+  // already open) and we'd confuse the slots of an old window with the shop's.
   if (bot.currentWindow) {
-    try { bot.closeWindow(bot.currentWindow) } catch { /* no crítico */ }
+    try { bot.closeWindow(bot.currentWindow) } catch { /* not critical */ }
   }
 
-  log(cfg.id, `[${macro.name}] Enviando "${macro.openCommand}"...`)
+  log(cfg.id, `[${macro.name}] Sending "${macro.openCommand}"...`)
   bot.chat(macro.openCommand)
 
   let window
   try {
     window = await waitForWindowOpen(bot, macro.windowTimeoutMs)
   } catch (err) {
-    log(cfg.id, `[${macro.name}] No se abrió ninguna ventana (${err.message}). Macro cancelado.`)
+    log(cfg.id, `[${macro.name}] No window opened (${err.message}). Macro cancelled.`)
     return
   }
 
-  log(cfg.id, `[${macro.name}] Ventana abierta (${window.title || window.type || 'tienda'}). Haciendo ${times} click(s) en slot ${macro.slot}, delay ${delayMs}ms...`)
+  log(cfg.id, `[${macro.name}] Window opened (${window.title || window.type || 'shop'}). Doing ${times} click(s) on slot ${macro.slot}, delay ${delayMs}ms...`)
 
   const mouseButton = macro.button === 'right' ? 1 : 0
   let done = 0
   for (let i = 0; i < times; i++) {
     if (!bot.currentWindow) {
-      log(cfg.id, `[${macro.name}] La ventana se cerró antes de terminar (${done}/${times} clicks hechos)`)
+      log(cfg.id, `[${macro.name}] The window closed before finishing (${done}/${times} clicks done)`)
       return
     }
     try {
       await bot.clickWindow(macro.slot, mouseButton, 0)
       done++
     } catch (err) {
-      log(cfg.id, `[${macro.name}] Error en click ${i + 1}/${times}: ${err.message}`)
+      log(cfg.id, `[${macro.name}] Error on click ${i + 1}/${times}: ${err.message}`)
     }
     if (i < times - 1) await sleep(delayMs)
   }
-  log(cfg.id, `[${macro.name}] Terminado: ${done}/${times} clicks hechos.`)
+  log(cfg.id, `[${macro.name}] Done: ${done}/${times} clicks completed.`)
 
-  // ─── Cierre final del menú ────────────────────────────────────────────
-  // Muchos servidores dejan el menú de la tienda abierto tras comprar; lo
-  // cerramos igual que haría el comando "/close" (manda el packet
-  // close_window al servidor), salvo que el macro lo desactive con
-  // closeAfter: false en la sección "macros" de config.js.
+  // ─── Final window close ────────────────────────────────────────────
+  // Many servers leave the shop menu open after buying; we close it the
+  // same way the "/close" command would (sends the close_window packet to
+  // the server), unless the macro disables this with closeAfter: false in
+  // the "macros" section of config.js.
   if (macro.closeAfter !== false) {
     if (bot.currentWindow) {
       try {
         bot.closeWindow(bot.currentWindow)
-        log(cfg.id, `[${macro.name}] Ventana cerrada.`)
+        log(cfg.id, `[${macro.name}] Window closed.`)
       } catch (err) {
-        log(cfg.id, `[${macro.name}] Error cerrando la ventana: ${err.message}`)
+        log(cfg.id, `[${macro.name}] Error closing the window: ${err.message}`)
       }
     }
   }
 }
 
-// readline ya activa keypress + raw mode internamente para el TTY, así que
-// esto no interfiere con la edición normal de línea (flechas, historial, etc).
+// readline already enables keypress + raw mode internally for the TTY, so
+// this doesn't interfere with normal line editing (arrows, history, etc).
 readline.emitKeypressEvents(process.stdin, rl)
 if (isTTY) process.stdin.setRawMode(true)
 process.stdin.on('keypress', (str, key) => {
   if (!key) return
   if (key.ctrl && key.name === 'c') { rl.close(); process.exit(0) }
   if (key.ctrl && key.name === 't' && mode !== 'menu') { openMenu(); return }
-  if (mode === 'menu') return // el menú tiene prioridad total, ya gestionado en openMenu()
-  handleHotkeyPress(key) // async de fondo; no bloquea la edición de línea
+  if (mode === 'menu') return // the menu has total priority, already handled in openMenu()
+  handleHotkeyPress(key) // runs async in the background; doesn't block line editing
 })
 
 function stripFormatting(input) {
@@ -657,33 +660,34 @@ function stripFormatting(input) {
   return text.replace(/§#[0-9a-fA-F]{6}/g, '').replace(/§[0-9a-fk-or]/gi, '')
 }
 
-// ─── API externa: consulta de gemas ────────────────────────────────────────
-// Usa fetchJsonRetry (mismo helper que fetchClanTopData) para reintentar con
-// backoff en 429/5xx en vez de fallar a la primera, y loguea el motivo real
-// del fallo para poder diferenciar "API caída" de "rate limit" o "campo
-// stats.gems ausente en la respuesta".
+// ─── External API: gem lookup ────────────────────────────────────────────
+// Uses fetchJsonRetry (same helper as fetchClanTopData) to retry with
+// backoff on 429/5xx instead of failing on the first try, and logs the
+// real failure reason so we can tell "API down" apart from "rate limit"
+// or "stats.gems field missing from the response".
 async function fetchGemsForUsername(username, logId) {
-  const url = `https://api.widowmc.net/api/v1/players/${encodeURIComponent(username)}`
+  const url = `https://api.yourserver.net/api/v1/players/${encodeURIComponent(username)}`
   try {
     const json = await fetchJsonRetry(url)
     const gems = json?.stats?.gems
     if (typeof gems !== 'number') {
-      if (logId) log(logId, `[gemas] respuesta sin stats.gems para ${username}: ${JSON.stringify(json).slice(0, 200)}`)
+      if (logId) log(logId, `[gems] response without stats.gems for ${username}: ${JSON.stringify(json).slice(0, 200)}`)
       return null
     }
     return gems
   } catch (err) {
-    if (logId) log(logId, `[gemas] fallo consultando ${username}: ${err.status ? `HTTP ${err.status}` : err.message}`)
+    if (logId) log(logId, `[gems] failed querying ${username}: ${err.status ? `HTTP ${err.status}` : err.message}`)
     return null
   }
 }
 
-// GET genérico a la API pública de widowmc: resuelve con el JSON parseado o
-// rechaza con un Error que lleva `.status` (código HTTP) cuando lo hay, para
-// poder distinguir "no encontrado" (4xx) de "rate limit / caído" (429, 5xx).
+// Generic GET against the server's public API: resolves with the parsed
+// JSON, or rejects with an Error carrying `.status` (HTTP code) when
+// available, so we can tell "not found" (4xx) apart from "rate limit /
+// down" (429, 5xx).
 function fetchJson(url) {
   return new Promise((resolve, reject) => {
-    https.get(url, { agent: widowmcAgent }, (res) => {
+    https.get(url, { agent: gemsApiAgent }, (res) => {
       let data = ''
       res.on('data', (chunk) => { data += chunk })
       res.on('end', () => {
@@ -700,8 +704,8 @@ function fetchJson(url) {
   })
 }
 
-// Igual que fetchJson pero con reintentos + backoff exponencial para 429
-// (rate limit) y errores 5xx puntuales de la API.
+// Same as fetchJson but with retries + exponential backoff for 429
+// (rate limit) and occasional 5xx errors from the API.
 async function fetchJsonRetry(url, tries = 3, baseDelayMs = 600) {
   let lastErr
   for (let attempt = 0; attempt < tries; attempt++) {
@@ -717,17 +721,17 @@ async function fetchJsonRetry(url, tries = 3, baseDelayMs = 600) {
   throw lastErr
 }
 
-// ─── Top de gemas de un clan (usado por el panel web) ───────────────────────
-// Se ejecuta en el backend (sin restricciones de CORS) para evitar que el
-// navegador bloquee las peticiones directas a api.widowmc.net.
+// ─── Clan gem leaderboard (used by the web panel) ───────────────────────────
+// Runs on the backend (with no CORS restrictions) to prevent the browser
+// from blocking direct requests to the server's API.
 async function fetchClanTopData(slug, knownGems) {
-  const clan = await fetchJsonRetry(`https://api.widowmc.net/api/v1/clans/${encodeURIComponent(slug)}`)
+  const clan = await fetchJsonRetry(`https://api.yourserver.net/api/v1/clans/${encodeURIComponent(slug)}`)
   const members = Array.isArray(clan.members) ? clan.members : []
   const results = []
 
-  // Mapa de gemas ya conocidas (cuentas propias, que ya se muestran en el
-  // panel) para no volver a pedirlas a la API y así no gastar cupo de
-  // rate limit en consultas redundantes.
+  // Map of already-known gem counts (own accounts, already shown in the
+  // panel) so we don't re-request them from the API and waste rate-limit
+  // budget on redundant queries.
   const knownMap = new Map()
   if (Array.isArray(knownGems)) {
     for (const k of knownGems) {
@@ -753,7 +757,7 @@ async function fetchClanTopData(slug, knownGems) {
     function launchNext() {
       if (idx >= toFetch.length) return
       const m = toFetch[idx++]
-      fetchJsonRetry(`https://api.widowmc.net/api/v1/players/${encodeURIComponent(m.name)}`)
+      fetchJsonRetry(`https://api.yourserver.net/api/v1/players/${encodeURIComponent(m.name)}`)
         .then((data) => {
           results.push({ name: m.name, online: !!m.online, gems: typeof data?.stats?.gems === 'number' ? data.stats.gems : null })
         })
@@ -780,10 +784,10 @@ function log(id, msg) {
   broadcast({ type: 'log', id, msg })
 }
 
-// ─── Histórico de gemas generadas (/paygemas) — persistido en disco ─────────
-// La carga/guardado en disco vive en history.js (public/gems-history.json).
-// Aquí solo envolvemos esas llamadas para avisar por WebSocket a los
-// clientes conectados cuando hay una entrada nueva o se borra el histórico.
+// ─── Generated-gems history (/paygemas) — persisted to disk ─────────
+// Loading/saving to disk lives in history.js (public/gems-history.json).
+// Here we just wrap those calls to notify connected clients over
+// WebSocket when there's a new entry or the history gets cleared.
 function addGemsHistoryEntry(entry) {
   gemsHistoryStore.add(entry)
   broadcast({ type: 'gems_history_add', entry })
@@ -799,14 +803,14 @@ function formatWindow(window) {
   window.slots.forEach((item, i) => {
     if (item) lines.push(`  [${i}] ${item.displayName} x${item.count}`)
   })
-  return lines.length ? lines.join('\n') : '  (vacío)'
+  return lines.length ? lines.join('\n') : '  (empty)'
 }
 
 function printWindow(id, window) {
-  output(`[${id}] Ventana: ${window.title || window.type || 'inventario'} (${window.slots.length} slots)\n${formatWindow(window)}`)
+  output(`[${id}] Window: ${window.title || window.type || 'inventory'} (${window.slots.length} slots)\n${formatWindow(window)}`)
 }
 
-// ─── Auto-click por sesión ───────────────────────────────────────────────────
+// ─── Per-session auto-click ───────────────────────────────────────────────────
 function makeAutoClick(session) {
   return {
     interval: null,
@@ -824,7 +828,7 @@ function makeAutoClick(session) {
         if (button === 'right') bot.activateItem()
         else bot.swingArm()
       }, ms)
-      log(session.cfg.id, `[AutoClick] ▶ ${button} cada ${ms}ms`)
+      log(session.cfg.id, `[AutoClick] ▶ ${button} every ${ms}ms`)
     },
     stop() {
       if (this.interval) clearInterval(this.interval)
@@ -832,32 +836,32 @@ function makeAutoClick(session) {
       this.active = false
     },
     toggle(button, ms) {
-      if (this.active) { this.stop(); log(session.cfg.id, '[AutoClick] ■ Desactivado') }
+      if (this.active) { this.stop(); log(session.cfg.id, '[AutoClick] ■ Disabled') }
       else this.start(button, ms)
     },
   }
 }
 
-// ─── Sincronización de reconexión entre cuentas ──────────────────────────────
-// Reglas pedidas:
-//  1. Al desconectarse una cuenta, espera 15s y reintenta conectar.
-//  2. Si ese intento falla, espera 1 minuto y vuelve a intentarlo (y así con
-//     cada fallo siguiente, cada 1 minuto).
-//  3. Si cualquier intento falla porque el SERVIDOR está caído (no la cuenta:
-//     error de red al conectar, no un kick/login fallido), se deja de
-//     reintentar por cuenta y se pasa a comprobar cada 1 minuto si el server
-//     ya responde.
-//  4. Cuando el server vuelve a estar operativo, se espera 30s y se empieza a
-//     reconectar las cuentas.
-//  5. Todas las cuentas (arranque, reconexión automática, /connect manual y
-//     panel web) comparten un mismo "turno" por servidor para no disparar dos
-//     conexiones con menos de 15s de diferencia entre ellas, porque el server
-//     rechaza conexiones si llegan demasiado rápido seguidas.
-const RECONNECT_FIRST_DELAY_MS = 15000    // espera tras desconexión antes del 1er reintento
-const RECONNECT_RETRY_DELAY_MS = 60000    // espera entre reintentos si el anterior falló
-const SERVER_DOWN_CHECK_INTERVAL_MS = 60000 // frecuencia de chequeo con el server caído
-const SERVER_UP_RESUME_DELAY_MS = 30000   // espera tras detectar que el server volvió
-const MIN_CONNECT_GAP_MS = 15000          // separación mínima entre intentos al mismo server
+// ─── Reconnection synchronization across accounts ──────────────────────────────
+// Requested rules:
+//  1. When an account disconnects, wait 15s and retry connecting.
+//  2. If that attempt fails, wait 1 minute and try again (and so on for
+//     every subsequent failure, every 1 minute).
+//  3. If any attempt fails because the SERVER is down (not the account:
+//     a network error while connecting, not a kick/failed login), stop
+//     retrying per account and switch to checking every 1 minute whether
+//     the server responds again.
+//  4. Once the server is operational again, wait 30s and start
+//     reconnecting the accounts.
+//  5. All accounts (startup, automatic reconnection, manual /connect, and
+//     the web panel) share the same "turn" per server so two connections
+//     aren't fired less than 15s apart, because the server rejects
+//     connections that arrive too close together.
+const RECONNECT_FIRST_DELAY_MS = 15000    // wait after disconnect before the 1st retry
+const RECONNECT_RETRY_DELAY_MS = 60000    // wait between retries if the previous one failed
+const SERVER_DOWN_CHECK_INTERVAL_MS = 60000 // check frequency while the server is down
+const SERVER_UP_RESUME_DELAY_MS = 30000   // wait after detecting the server is back
+const MIN_CONNECT_GAP_MS = 15000          // minimum gap between attempts to the same server
 
 function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)) }
 function serverKey(cfg) { return `${cfg.host}:${cfg.port}` }
@@ -874,11 +878,11 @@ function getServerGate(cfg) {
   return gate
 }
 
-// Reserva turno para intentar conectar contra el server de `cfg`, esperando lo
-// necesario para que hayan pasado al menos MIN_CONNECT_GAP_MS desde el último
-// intento a ESE MISMO server (contando el de cualquier cuenta). Se encadena
-// sobre una promesa compartida (`queueTail`) para que dos cuentas pidiendo
-// turno "a la vez" no calculen el mismo hueco y terminen conectando juntas.
+// Reserves a turn to try connecting to `cfg`'s server, waiting as needed
+// so at least MIN_CONNECT_GAP_MS has passed since the last attempt to
+// THAT SAME server (counting any account's attempt). Chained on a shared
+// promise (`queueTail`) so two accounts requesting a turn "at the same
+// time" don't compute the same gap and end up connecting together.
 function reserveConnectSlot(cfg) {
   const gate = getServerGate(cfg)
   const turn = gate.queueTail.then(async () => {
@@ -890,9 +894,9 @@ function reserveConnectSlot(cfg) {
   return turn
 }
 
-// Distingue un fallo "de la cuenta" (login incorrecto, kick, versión, etc,
-// donde sí se llegó a hablar con el server) de un fallo "del servidor"
-// (no hay nadie escuchando / no responde / se corta la red).
+// Distinguishes an "account" failure (wrong login, kick, version
+// mismatch, etc., where we did manage to talk to the server) from a
+// "server" failure (nobody's listening / not responding / network cut).
 function isServerDownError(err) {
   if (!err) return false
   const code = err.code || ''
@@ -901,8 +905,8 @@ function isServerDownError(err) {
   return new RegExp(knownCodes.join('|') + '|timed out', 'i').test(String(err.message || ''))
 }
 
-// Chequeo de bajo nivel (TCP puro) para saber si el server ya responde, sin
-// pasar por todo el handshake/login de mineflayer.
+// Low-level (pure TCP) check for whether the server is responding, without
+// going through mineflayer's full handshake/login.
 function checkServerReachable(cfg) {
   return new Promise((resolve) => {
     const socket = net.createConnection({ host: cfg.host, port: cfg.port, timeout: 5000 })
@@ -913,13 +917,13 @@ function checkServerReachable(cfg) {
   })
 }
 
-// Marca el server como caído (si no lo estaba ya) y arranca el chequeo
-// periódico cada minuto hasta que vuelva a responder.
+// Marks the server as down (if it wasn't already) and starts the periodic
+// check every minute until it responds again.
 function markServerDown(cfg) {
   const gate = getServerGate(cfg)
   if (gate.down) return
   gate.down = true
-  log(cfg.id, `El servidor ${gate.key} parece caído. Comprobando cada ${SERVER_DOWN_CHECK_INTERVAL_MS / 1000}s hasta que vuelva...`)
+  log(cfg.id, `Server ${gate.key} appears to be down. Checking every ${SERVER_DOWN_CHECK_INTERVAL_MS / 1000}s until it's back...`)
   if (gate.checking) return
   gate.checking = true
 
@@ -928,7 +932,7 @@ function markServerDown(cfg) {
     const ok = await checkServerReachable(cfg)
     if (!ok) { setTimeout(tick, SERVER_DOWN_CHECK_INTERVAL_MS); return }
 
-    log(cfg.id, `El servidor ${gate.key} volvió a responder. Esperando ${SERVER_UP_RESUME_DELAY_MS / 1000}s antes de reconectar cuentas...`)
+    log(cfg.id, `Server ${gate.key} is responding again. Waiting ${SERVER_UP_RESUME_DELAY_MS / 1000}s before reconnecting accounts...`)
     await sleep(SERVER_UP_RESUME_DELAY_MS)
     gate.down = false
     gate.checking = false
@@ -937,9 +941,9 @@ function markServerDown(cfg) {
   setTimeout(tick, SERVER_DOWN_CHECK_INTERVAL_MS)
 }
 
-// Reconecta (respetando el turno de 15s de cada una) todas las cuentas de un
-// server concreto que estén desconectadas y pendientes de reconexión
-// automática, una vez confirmado que el server volvió a estar operativo.
+// Reconnects (respecting each one's 15s turn) every account on a given
+// server that's disconnected and pending automatic reconnection, once
+// it's confirmed the server is operational again.
 function resumeAccountsForServer(key) {
   for (const session of sessions.values()) {
     if (serverKey(session.cfg) !== key) continue
@@ -952,16 +956,16 @@ function resumeAccountsForServer(key) {
   }
 }
 
-// Punto de entrada único para conectar una cuenta: arranque, reconexión
-// automática, `/connect` manual y panel web pasan todos por aquí, así todos
-// respetan el mismo turno de separación mínima entre conexiones al server.
+// Single entry point for connecting an account: startup, automatic
+// reconnection, manual `/connect`, and the web panel all go through here,
+// so they all respect the same minimum gap between connections to the server.
 function attemptConnect(cfg) {
   const gate = getServerGate(cfg)
-  if (gate.down) return // el chequeo periódico de markServerDown se encarga de retomar
+  if (gate.down) return // the periodic check in markServerDown takes care of resuming
   reserveConnectSlot(cfg).then(() => connect(cfg))
 }
 
-// ─── Crear/conectar una cuenta ───────────────────────────────────────────────
+// ─── Create/connect an account ───────────────────────────────────────────────
 function connect(cfg) {
   let session = sessions.get(cfg.id)
   if (session?.bot) session.bot.end()
@@ -989,12 +993,12 @@ function connect(cfg) {
   session.bot = bot
   patchNoisyScoreboardListeners(bot, cfg.id)
 
-  // mineflayer puede emitir 'spawn' más de una vez dentro de la MISMA conexión
-  // (algunos servidores mandan varios paquetes de posición/teleport seguidos
-  // nada más entrar — warps, respawns internos, etc. — y cada uno dispara un
-  // 'spawn'). Esta bandera vive en el closure de connect(), así que se
-  // resetea sola en cada conexión real nueva, y evita que /login y
-  // spawnCommand se reenvíen varias veces en la misma sesión.
+  // mineflayer can emit 'spawn' more than once within the SAME connection
+  // (some servers send several position/teleport packets in a row right
+  // after joining — warps, internal respawns, etc. — and each one fires a
+  // 'spawn'). This flag lives in connect()'s closure, so it resets itself
+  // on every new real connection, and prevents /login and spawnCommand
+  // from being resent multiple times in the same session.
   let firstSpawnHandled = false
 
   bot.on('spawn', () => {
@@ -1006,14 +1010,14 @@ function connect(cfg) {
     if (firstSpawnHandled) return
     firstSpawnHandled = true
 
-    log(cfg.id, `Conectado a ${cfg.host}:${cfg.port}`)
+    log(cfg.id, `Connected to ${cfg.host}:${cfg.port}`)
     if (cfg.password) bot.chat(`/login ${cfg.password}`)
 
-    // ─── spawnCommand (config.js): comando(s) que la cuenta ejecuta sola nada
-    // más entrar. Admite un string único o un array de strings (se mandan en
-    // orden). Si la cuenta hace /login (tiene "password"), se espera un poco
-    // para dar tiempo al servidor a procesar el login antes de mandar más
-    // comandos; si no hay login, se manda enseguida.
+    // ─── spawnCommand (config.js): command(s) the account runs on its own
+    // right after joining. Accepts a single string or an array of strings
+    // (sent in order). If the account does /login (has a "password"), we
+    // wait a bit to give the server time to process the login before
+    // sending more commands; if there's no login, it's sent right away.
     if (cfg.spawnCommand) {
       const spawnCommands = Array.isArray(cfg.spawnCommand) ? cfg.spawnCommand : [cfg.spawnCommand]
       const spawnDelay = cfg.password ? 1200 : 0
@@ -1042,27 +1046,29 @@ function connect(cfg) {
     ).trim()
     if (!text) return
 
-    // ─── Auto-register: si el server menciona "register", mandamos /register <pass> <pass> ──
-    // Va antes del check de "muted" para que funcione siempre, y con cooldown para no
-    // spamear el comando si el server imprime varias líneas seguidas con esa palabra.
+    // ─── Auto-register: if the server mentions "register", we send /register <pass> <pass> ──
+    // Runs before the "muted" check so it always works, with a cooldown so
+    // we don't spam the command if the server prints several lines in a
+    // row containing that word.
     if (cfg.password && /register/i.test(text)) {
       const now = Date.now()
       if (now - (session.lastAutoRegister || 0) > 5000) {
         session.lastAutoRegister = now
         bot.chat(`/register ${cfg.password} ${cfg.password}`)
-        log(cfg.id, `[AutoRegister] Enviado: /register ${cfg.password} ${cfg.password}`)
+        log(cfg.id, `[AutoRegister] Sent: /register ${cfg.password} ${cfg.password}`)
       }
     }
 
-    // ─── Triggers de chat: igual que auto-register, funcionan aunque esté "muted" ──
+    // ─── Chat triggers: like auto-register, these work even while "muted" ──
     handleChatTriggers(cfg, text).catch((err) => log(cfg.id, `[Trigger error] ${err.message}`))
 
     if (seen.has(text)) { seen.delete(text); return }
     seen.add(text)
     setImmediate(() => seen.delete(text))
 
-    // ─── Log a fichero: solo la cuenta "primaria", y aunque esté muted en
-    // consola/panel (el fichero quiere guardar TODO el chat, no lo que se ve). ──
+    // ─── Log to file: only the "primary" account, even if it's muted in
+    // the console/panel (the file wants to save ALL of the chat, not just
+    // what's shown). ──
     if (cfg.id === PRIMARY_ACCOUNT_ID) writeChatLog(text)
 
     if (session.muted) return
@@ -1075,28 +1081,28 @@ function connect(cfg) {
   })
 
   bot.on('death', () => { session.autoClick.stop(); bot.respawn() })
-  bot.on('kicked', (reason) => log(cfg.id, `Expulsado: ${stripFormatting(reason)}`))
+  bot.on('kicked', (reason) => log(cfg.id, `Kicked: ${stripFormatting(reason)}`))
   bot.on('error', (err) => {
     session.lastError = err
     if (!isKnownNoisyError(err)) log(cfg.id, `[Error] ${err.message}`)
   })
   bot.on('end', async (reason) => {
-    log(cfg.id, `Desconectado: ${reason}`)
+    log(cfg.id, `Disconnected: ${reason}`)
     session.autoClick.stop()
     session.bot = null
     broadcastStatus()
     await sendDiscordWebhook(cfg.id, reason)
-    log(cfg.id, 'Aviso enviado a Discord.')
+    log(cfg.id, 'Notification sent to Discord.')
 
     if (session.manualDisconnect) return
     if (cfg.autoRelog === false) {
-      log(cfg.id, 'autoRelog desactivado en config.js: no se reconectará sola.')
+      log(cfg.id, 'autoRelog disabled in config.js: it will not reconnect on its own.')
       return
     }
 
-    // Fallo de conexión (nunca llegó a spawnear) por un error de red típico de
-    // "el server no está levantado": dejamos de reintentar por cuenta y
-    // pasamos a comprobar cada minuto hasta que vuelva.
+    // Connection failure (never managed to spawn) due to a typical
+    // "server isn't up" network error: stop retrying per account and
+    // switch to checking every minute until it's back.
     if (!session.spawnedThisAttempt && isServerDownError(session.lastError)) {
       markServerDown(cfg)
       return
@@ -1104,62 +1110,62 @@ function connect(cfg) {
 
     session.retries += 1
     const delay = session.retries <= 1 ? RECONNECT_FIRST_DELAY_MS : RECONNECT_RETRY_DELAY_MS
-    log(cfg.id, `Reintentando conexión en ${delay / 1000}s (intento ${session.retries})...`)
+    log(cfg.id, `Retrying connection in ${delay / 1000}s (attempt ${session.retries})...`)
     session.reconnectTimer = setTimeout(() => attemptConnect(cfg), delay)
   })
 
   return session
 }
 
-// ─── Persistencia de "multi" en config.js ───────────────────────────────────
-// Reescribe SOLO el campo "multi" del bloque de la cuenta indicada dentro de
-// config.js, dejando el resto del archivo (formato, comentarios, otras
-// cuentas) intacto. Usa matching de llaves en vez de regex sobre todo el
-// fichero para no tocar por error el "multi" de otra cuenta.
+// ─── Persisting "multi" to config.js ───────────────────────────────────────
+// Rewrites ONLY the "multi" field of the given account's block inside
+// config.js, leaving the rest of the file (formatting, comments, other
+// accounts) untouched. Uses brace matching instead of a regex over the
+// whole file so it doesn't accidentally touch another account's "multi".
 const CONFIG_PATH = path.join(__dirname, 'config.js')
 function persistMultiToConfig(id, value) {
   try {
     const raw = fs.readFileSync(CONFIG_PATH, 'utf8')
 
     const idMatch = new RegExp(`id:\\s*['"]${id}['"]`).exec(raw)
-    if (!idMatch) { log(id, '[Aviso] No se guardó en config.js: id no encontrado en el archivo.'); return }
+    if (!idMatch) { log(id, '[Notice] Not saved to config.js: id not found in the file.'); return }
 
-    // Retrocede hasta la '{' que abre el objeto de esta cuenta.
+    // Backs up to the '{' that opens this account's object.
     const start = raw.lastIndexOf('{', idMatch.index)
-    if (start === -1) { log(id, '[Aviso] No se guardó en config.js: no se localizó el inicio del objeto.'); return }
+    if (start === -1) { log(id, '[Notice] Not saved to config.js: could not locate the start of the object.'); return }
 
-    // Avanza hasta la '}' que cierra ese mismo objeto, contando anidamiento.
+    // Advances to the '}' that closes that same object, counting nesting.
     let depth = 0, end = -1
     for (let i = start; i < raw.length; i++) {
       if (raw[i] === '{') depth++
       else if (raw[i] === '}') { depth--; if (depth === 0) { end = i; break } }
     }
-    if (end === -1) { log(id, '[Aviso] No se guardó en config.js: no se localizó el cierre del objeto.'); return }
+    if (end === -1) { log(id, '[Notice] Not saved to config.js: could not locate the end of the object.'); return }
 
     const block = raw.slice(start, end + 1)
     const newBlock = /multi\s*:\s*[\d.]+/.test(block)
       ? block.replace(/multi\s*:\s*[\d.]+/, `multi: ${value}`)
-      : block.replace(/\}\s*$/, `  multi: ${value},\n}`) // si la cuenta no tenía "multi", lo añade
+      : block.replace(/\}\s*$/, `  multi: ${value},\n}`) // if the account didn't have "multi", add it
 
     fs.writeFileSync(CONFIG_PATH, raw.slice(0, start) + newBlock + raw.slice(end + 1), 'utf8')
-    log(id, 'Guardado en config.js.')
+    log(id, 'Saved to config.js.')
   } catch (err) {
-    log(id, `[Aviso] No se pudo guardar multi en config.js: ${err.message}`)
+    log(id, `[Notice] Could not save multi to config.js: ${err.message}`)
   }
 }
 
-// ─── Ejecutar un comando sobre un bot concreto ──────────────────────────────
+// ─── Run a command on a specific bot ──────────────────────────────────────
 async function runCommand(session, trimmed) {
   const { bot, autoClick, cfg } = session
-  if (!bot) { log(cfg.id, 'No conectado. Usa /connect ' + cfg.id); return }
+  if (!bot) { log(cfg.id, 'Not connected. Use /connect ' + cfg.id); return }
 
-  // ─── Macros de tienda dinámicos (ej. "/casco 5" definido en config.js) ────
+  // ─── Dynamic shop macros (e.g. "/helmet 5" defined in config.js) ────
   if (trimmed.startsWith('/')) {
     const parts = trimmed.slice(1).split(/\s+/)
     const macro = macroMap.get(parts[0].toLowerCase())
     if (macro) {
       const times = parseInt(parts[1], 10)
-      if (isNaN(times) || times <= 0) { log(cfg.id, `Uso: /${macro.name} <numero de clicks> [delayMs]`); return }
+      if (isNaN(times) || times <= 0) { log(cfg.id, `Usage: /${macro.name} <number of clicks> [delayMs]`); return }
       const delayMs = parts[2] != null && !isNaN(parseInt(parts[2], 10)) ? parseInt(parts[2], 10) : macro.delayMs
       await runBuyMacro(session, macro, times, delayMs)
       return
@@ -1182,21 +1188,21 @@ async function runCommand(session, trimmed) {
       if (!isNaN(slot) && slot >= 0 && slot <= 8) bot.setQuickBarSlot(slot)
     }
     bot.activateItem()
-    log(cfg.id, 'Click derecho')
+    log(cfg.id, 'Right click')
     return
   }
   if (trimmed.startsWith('/equip')) {
     const slot = parseInt(trimmed.split(/\s+/)[1], 10)
-    if (isNaN(slot) || slot < 0 || slot > 8) { log(cfg.id, 'Uso: /equip <slot 0-8>'); return }
+    if (isNaN(slot) || slot < 0 || slot > 8) { log(cfg.id, 'Usage: /equip <slot 0-8>'); return }
     bot.setQuickBarSlot(slot)
     const item = bot.inventory.slots[36 + slot]
-    log(cfg.id, `Mano: ${item ? item.displayName : 'Vacío'}`)
+    log(cfg.id, `Hand: ${item ? item.displayName : 'Empty'}`)
     return
   }
   if (trimmed.startsWith('/click')) {
     const parts = trimmed.split(/\s+/)
     const slot = parseInt(parts[1], 10)
-    if (isNaN(slot) || !bot.currentWindow) { log(cfg.id, 'Sin ventana abierta o slot inválido'); return }
+    if (isNaN(slot) || !bot.currentWindow) { log(cfg.id, 'No window open or invalid slot'); return }
     const action = parts[2] || 'left'
     let mouseButton = 0, mode = 0
     if (action === 'right') mouseButton = 1
@@ -1212,8 +1218,8 @@ async function runCommand(session, trimmed) {
     return
   }
   if (trimmed === '/close') {
-    if (bot.currentWindow) { bot.closeWindow(bot.currentWindow); log(cfg.id, 'Ventana cerrada') }
-    else log(cfg.id, 'No hay ventana abierta')
+    if (bot.currentWindow) { bot.closeWindow(bot.currentWindow); log(cfg.id, 'Window closed') }
+    else log(cfg.id, 'No window open')
     return
   }
   if (trimmed.startsWith('/autoclick')) {
@@ -1227,7 +1233,7 @@ async function runCommand(session, trimmed) {
   if (trimmed.startsWith('/look ')) {
     const [, yawS, pitchS] = trimmed.split(/\s+/)
     const yaw = parseFloat(yawS), pitch = parseFloat(pitchS)
-    if (isNaN(yaw) || isNaN(pitch)) { log(cfg.id, 'Uso: /look <yaw> <pitch>'); return }
+    if (isNaN(yaw) || isNaN(pitch)) { log(cfg.id, 'Usage: /look <yaw> <pitch>'); return }
     const toRad = d => (d * Math.PI) / 180
     bot.entity.yaw = toRad(yaw)
     bot.entity.pitch = toRad(pitch)
@@ -1235,62 +1241,62 @@ async function runCommand(session, trimmed) {
       x: bot.entity.position.x, y: bot.entity.position.y, z: bot.entity.position.z,
       yaw, pitch, flags: 0x00, teleportId: 0,
     })
-    log(cfg.id, `Mirando yaw:${yaw}° pitch:${pitch}°`)
+    log(cfg.id, `Looking yaw:${yaw}° pitch:${pitch}°`)
     return
   }
   if (trimmed.startsWith('/lookat')) {
     const [, xs, ys, zs] = trimmed.split(/\s+/)
     const x = parseFloat(xs), y = parseFloat(ys), z = parseFloat(zs)
-    if ([x, y, z].some(isNaN)) { log(cfg.id, 'Uso: /lookat <x> <y> <z>'); return }
+    if ([x, y, z].some(isNaN)) { log(cfg.id, 'Usage: /lookat <x> <y> <z>'); return }
     await bot.lookAt({ x, y, z }, true)
-    log(cfg.id, `Mirando a (${x}, ${y}, ${z})`)
+    log(cfg.id, `Looking at (${x}, ${y}, ${z})`)
     return
   }
   if (trimmed === '/drop') {
     const item = bot.heldItem
-    if (!item) { log(cfg.id, 'Nada en la mano'); return }
-    try { await bot.tossStack(item); log(cfg.id, `Tirado: ${item.displayName} x${item.count}`) }
+    if (!item) { log(cfg.id, 'Nothing in hand'); return }
+    try { await bot.tossStack(item); log(cfg.id, `Dropped: ${item.displayName} x${item.count}`) }
     catch (err) { log(cfg.id, `Error: ${err.message}`) }
     return
   }
   if (trimmed === '/dropall') {
     const items = bot.inventory.items()
-    if (!items.length) { log(cfg.id, 'Inventario vacío'); return }
-    log(cfg.id, `Tirando ${items.length} stacks...`)
+    if (!items.length) { log(cfg.id, 'Inventory empty'); return }
+    log(cfg.id, `Dropping ${items.length} stacks...`)
     for (const item of items) {
       try { await bot.tossStack(item) }
-      catch (err) { log(cfg.id, `Error tirando ${item.displayName}: ${err.message}`) }
+      catch (err) { log(cfg.id, `Error dropping ${item.displayName}: ${err.message}`) }
     }
-    log(cfg.id, 'Inventario vaciado')
+    log(cfg.id, 'Inventory emptied')
     return
   }
   if (trimmed === '/dropallgui') {
     const win = bot.currentWindow
-    if (!win) { log(cfg.id, 'No hay ventana abierta. Usa /dropall para el inventario.'); return }
-    // win.slots incluye tanto los slots del contenedor (cofre, ender chest, etc.)
-    // como los del inventario del jugador, así que un solo barrido vacía ambos.
+    if (!win) { log(cfg.id, 'No window open. Use /dropall for the inventory.'); return }
+    // win.slots includes both the container's slots (chest, ender chest,
+    // etc.) and the player's inventory slots, so a single sweep empties both.
     const slotsWithItems = []
     win.slots.forEach((item, i) => { if (item) slotsWithItems.push(i) })
-    if (!slotsWithItems.length) { log(cfg.id, 'Ventana e inventario ya están vacíos'); return }
-    log(cfg.id, `Tirando ${slotsWithItems.length} stacks (ventana + inventario)...`)
+    if (!slotsWithItems.length) { log(cfg.id, 'Window and inventory are already empty'); return }
+    log(cfg.id, `Dropping ${slotsWithItems.length} stacks (window + inventory)...`)
     for (const slot of slotsWithItems) {
-      try { await bot.clickWindow(slot, 1, 4) } // mode 4 = drop, button 1 = stack completo
-      catch (err) { log(cfg.id, `Error tirando slot ${slot}: ${err.message}`) }
+      try { await bot.clickWindow(slot, 1, 4) } // mode 4 = drop, button 1 = whole stack
+      catch (err) { log(cfg.id, `Error dropping slot ${slot}: ${err.message}`) }
     }
-    log(cfg.id, 'Ventana e inventario vaciados')
+    log(cfg.id, 'Window and inventory emptied')
     return
   }
 
   if (trimmed.startsWith('/multi')) {
     const parts = trimmed.split(/\s+/)
     if (parts[1] == null) {
-      log(cfg.id, `Multi actual: x${typeof cfg.multi === 'number' ? cfg.multi : 1}`)
+      log(cfg.id, `Current multi: x${typeof cfg.multi === 'number' ? cfg.multi : 1}`)
       return
     }
     const value = parseFloat(parts[1])
-    if (isNaN(value)) { log(cfg.id, 'Uso: /multi [numero]'); return }
+    if (isNaN(value)) { log(cfg.id, 'Usage: /multi [number]'); return }
     cfg.multi = value
-    log(cfg.id, `Multi actualizado a x${value}`)
+    log(cfg.id, `Multi updated to x${value}`)
     persistMultiToConfig(cfg.id, value)
     broadcastStatus()
     return
@@ -1299,27 +1305,27 @@ async function runCommand(session, trimmed) {
   if (trimmed.startsWith('/paygemas') || trimmed.startsWith('paygemas')) {
     const parts = trimmed.split(/\s+/)
     const targetName = parts[1]
-    if (!targetName) { log(cfg.id, 'Uso: /paygemas <nombre>'); return }
-    log(cfg.id, `Consultando gemas de ${cfg.username}...`)
+    if (!targetName) { log(cfg.id, 'Usage: /paygemas <name>'); return }
+    log(cfg.id, `Checking ${cfg.username}'s gems...`)
     const gems = await fetchGemsForUsername(cfg.username, cfg.id)
-    if (gems == null) { log(cfg.id, `No se pudo obtener el número de gemas de ${cfg.username} (API caída o error)`); return }
-    if (gems <= 0) { log(cfg.id, `${cfg.username} no tiene gemas (0), no se envía nada`); return }
+    if (gems == null) { log(cfg.id, `Could not get the gem count for ${cfg.username} (API down or error)`); return }
+    if (gems <= 0) { log(cfg.id, `${cfg.username} has no gems (0), nothing sent`); return }
     const cmd = `/gemas pagar ${targetName} ${gems}`
     bot.chat(cmd)
-    log(cfg.id, `Enviado: ${cmd}`)
+    log(cfg.id, `Sent: ${cmd}`)
     addGemsHistoryEntry({ ts: Date.now(), botId: cfg.id, target: targetName, gems })
     return
   }
 
-  // Cualquier otra cosa → chat
+  // Anything else → chat
   bot.chat(trimmed)
 }
 
-// ─── Comandos de gestión multi-cuenta ────────────────────────────────────────
+// ─── Multi-account management commands ────────────────────────────────────────
 function listAccounts() {
   const lines = accounts.map((cfg) => {
     const s = sessions.get(cfg.id)
-    const state = s?.bot ? 'conectado' : 'desconectado'
+    const state = s?.bot ? 'connected' : 'disconnected'
     const mark = cfg.id === activeId ? '►' : ' '
     return `${mark} ${cfg.id.padEnd(12)} ${cfg.username.padEnd(20)} [${state}]`
   })
@@ -1333,35 +1339,35 @@ rl.on('line', async (line) => {
 
   if (trimmed === '/help') {
     output(`
-Ctrl+T                   → Abre el menú interactivo para cambiar de cuenta
-/hotkeys                 → Lista las hotkeys configuradas en config.js
-/triggers                → Lista los triggers de chat configurados en config.js
-/macros                  → Lista los macros de tienda configurados en config.js
-/reload                  → Recarga hotkeys/triggers/macros de config.js a mano (también se recargan solos al guardar)
-/reloadhotkeys           → Recarga solo la sección "hotkeys" de config.js
-/reloadtriggers          → Recarga solo la sección "triggers" de config.js
-/reloadmacros            → Recarga solo la sección "macros" de config.js
-/accounts                → Lista cuentas y su estado
-/switch <id>             → Cambia la cuenta activa
-/connect <id>            → Conecta/reconecta una cuenta
-/disconnect [id]         → Desconecta una cuenta (por defecto: la activa)
-/mute                    → Deja de mostrar el chat/sistema de la cuenta activa
-/unmute                  → Vuelve a mostrar el chat de la cuenta activa
-/all <comando o texto>   → Ejecuta el comando/mensaje en TODAS las cuentas conectadas
-/q                       → Salir y desconectar todo
+Ctrl+T                   → Opens the interactive menu to switch accounts
+/hotkeys                 → Lists the hotkeys configured in config.js
+/triggers                → Lists the chat triggers configured in config.js
+/macros                  → Lists the shop macros configured in config.js
+/reload                  → Manually reloads hotkeys/triggers/macros from config.js (also reloads on save)
+/reloadhotkeys           → Reloads only the "hotkeys" section of config.js
+/reloadtriggers          → Reloads only the "triggers" section of config.js
+/reloadmacros            → Reloads only the "macros" section of config.js
+/accounts                → Lists accounts and their status
+/switch <id>             → Switches the active account
+/connect <id>            → Connects/reconnects an account
+/disconnect [id]         → Disconnects an account (defaults to the active one)
+/mute                    → Stops showing the active account's chat/system messages
+/unmute                  → Shows the active account's chat again
+/all <command or text>   → Runs the command/message on ALL connected accounts
+/q                       → Quit and disconnect everything
 
-Comandos por cuenta (activa o vía /all):
+Per-account commands (active account or via /all):
   /stats /pos /inv /use [slot] /equip <slot> /click <slot> [left|right|shift|drop]
   /close /autoclick [left|right] [ms] /look <yaw> <pitch> /lookat <x> <y> <z>
   /drop  /dropall  /dropallgui
-  /multi [numero]          → Sin número: muestra el multi actual de la cuenta
-                              Con número: cambia el multi de la cuenta (se ve en el panel web)
-  /paygemas <nombre>       → Envía "/gemas pagar <nombre> (gemas)" con las gemas actuales del bot
-                              (usa /all paygemas <nombre> para vaciar TODOS los bots hacia esa persona)
-  /<macro> <numero> [ms]   → Macros de tienda definidos en config.js (ej. "/casco 5")
-                              Manda el comando de apertura, espera la ventana y hace
-                              <numero> clicks en el slot configurado, con [ms] de delay entre cada uno
-  (cualquier otro texto se envía como chat)
+  /multi [number]          → Without a number: shows the account's current multi
+                              With a number: changes the account's multi (shown in the web panel)
+  /paygemas <name>         → Sends "/gemas pagar <name> <gems>" with the bot's current gems
+                              (use /all paygemas <name> to empty ALL bots to that person)
+  /<macro> <number> [ms]   → Shop macros defined in config.js (e.g. "/helmet 5")
+                              Sends the open command, waits for the window, and does
+                              <number> clicks on the configured slot, with [ms] delay between each
+  (any other text is sent as chat)
 `)
     prompt(); return
   }
@@ -1384,7 +1390,7 @@ Comandos por cuenta (activa o vía /all):
 
   if (trimmed.startsWith('/switch')) {
     const id = trimmed.split(/\s+/)[1]
-    if (!accounts.find(a => a.id === id)) output('Cuenta no encontrada en config.js')
+    if (!accounts.find(a => a.id === id)) output('Account not found in config.js')
     else { activeId = id; broadcastStatus() }
     prompt(); return
   }
@@ -1392,7 +1398,7 @@ Comandos por cuenta (activa o vía /all):
   if (trimmed.startsWith('/connect')) {
     const id = trimmed.split(/\s+/)[1] || activeId
     const cfg = accounts.find(a => a.id === id)
-    if (!cfg) output('Cuenta no encontrada en config.js')
+    if (!cfg) output('Account not found in config.js')
     else attemptConnect(cfg)
     prompt(); return
   }
@@ -1403,21 +1409,21 @@ Comandos por cuenta (activa o vía /all):
     if (s) {
       s.manualDisconnect = true
       if (s.reconnectTimer) clearTimeout(s.reconnectTimer)
-      if (s.bot) s.bot.end('Desconexión manual')
-      else output('Esa cuenta no está conectada')
-    } else output('Esa cuenta no está conectada')
+      if (s.bot) s.bot.end('Manual disconnect')
+      else output('That account is not connected')
+    } else output('That account is not connected')
     prompt(); return
   }
 
   if (trimmed === '/mute') {
     const s = sessions.get(activeId)
-    if (s) { s.muted = true; output(`[${activeId}] Chat silenciado`); broadcastStatus() }
+    if (s) { s.muted = true; output(`[${activeId}] Chat muted`); broadcastStatus() }
     prompt(); return
   }
 
   if (trimmed === '/unmute') {
     const s = sessions.get(activeId)
-    if (s) { s.muted = false; output(`[${activeId}] Chat activado`); broadcastStatus() }
+    if (s) { s.muted = false; output(`[${activeId}] Chat unmuted`); broadcastStatus() }
     prompt(); return
   }
 
@@ -1426,7 +1432,7 @@ Comandos por cuenta (activa o vía /all):
       s.manualDisconnect = true
       if (s.reconnectTimer) clearTimeout(s.reconnectTimer)
       s.autoClick.stop()
-      s.bot?.end('Cierre manual')
+      s.bot?.end('Manual shutdown')
     }
     rl.close()
     process.exit(0)
@@ -1440,14 +1446,14 @@ Comandos por cuenta (activa o vía /all):
     prompt(); return
   }
 
-  // Comando normal → va a la cuenta activa
+  // Normal command → goes to the active account
   const active = sessions.get(activeId)
-  if (!active) { output('No hay cuenta activa conectada. Usa /connect ' + activeId); prompt(); return }
+  if (!active) { output('No active account connected. Use /connect ' + activeId); prompt(); return }
   await runCommand(active, trimmed)
   prompt()
 })
 
-// ─── Panel web ───────────────────────────────────────────────────────────
+// ─── Web panel ───────────────────────────────────────────────────────────
 function getLanUrls(port) {
   const urls = []
   const ifaces = os.networkInterfaces()
@@ -1481,10 +1487,10 @@ function startWebServer() {
   })
 
   server.listen(webConfig.port, '0.0.0.0', () => {
-    output(`Panel web escuchando en el puerto ${webConfig.port}. Accede desde otros dispositivos de tu red con:`)
+    output(`Web panel listening on port ${webConfig.port}. Access it from other devices on your network at:`)
     const urls = getLanUrls(webConfig.port)
     if (urls.length) urls.forEach((u) => output(`  ${u}`))
-    else output(`  http://localhost:${webConfig.port} (no se detectó IP de red local)`)
+    else output(`  http://localhost:${webConfig.port} (no local network IP detected)`)
   })
 }
 
@@ -1502,7 +1508,7 @@ async function handleWebMessage(msg) {
     if (s?.bot) {
       s.manualDisconnect = true
       if (s.reconnectTimer) clearTimeout(s.reconnectTimer)
-      s.bot.end('Desconexión manual (panel web)')
+      s.bot.end('Manual disconnect (web panel)')
     }
     return
   }
@@ -1538,7 +1544,7 @@ async function handleWebMessage(msg) {
       const data = await fetchClanTopData(slug, msg.known)
       broadcast({ type: 'clantop_result', ...data })
     } catch (err) {
-      broadcast({ type: 'clantop_result', slug, error: err.message || 'No se pudo cargar el clan', members: [], total: 0, known: 0, count: 0 })
+      broadcast({ type: 'clantop_result', slug, error: err.message || 'Could not load the clan', members: [], total: 0, known: 0, count: 0 })
     }
     return
   }
@@ -1552,15 +1558,15 @@ for (const cfg of accounts) {
   seenIds.add(cfg.id)
 }
 if (dupIds.size) {
-  output(`⚠ ADVERTENCIA: id(s) duplicado(s) en config.js: ${[...dupIds].join(', ')}. Cada cuenta necesita un id único o se pisarán entre sí.`)
+  output(`⚠ WARNING: duplicate id(s) in config.js: ${[...dupIds].join(', ')}. Each account needs a unique id or they'll overwrite each other.`)
 }
 
-// El propio gate de conexión (reserveConnectSlot) ya se encarga de separar
-// cada intento al menos MIN_CONNECT_GAP_MS del anterior por servidor, así que
-// no hace falta escalonar aquí a mano: se piden todos los turnos ya, y se van
-// resolviendo en orden respetando el hueco mínimo.
-// Recarga las secciones "hotkeys"/"triggers"/"macros" de config.js a la vez
-// (usado por el watcher de fichero único de más abajo y por /reload).
+// reserveConnectSlot itself already takes care of spacing each attempt at
+// least MIN_CONNECT_GAP_MS apart from the previous one per server, so
+// there's no need to stagger by hand here: every turn is requested right
+// away, and they get resolved in order while respecting the minimum gap.
+// Reloads the "hotkeys"/"triggers"/"macros" sections of config.js all at
+// once (used by the single-file watcher below and by /reload).
 function reloadAllFromConfig() {
   fullConfig = loadConfigModule()
   hotkeysConfig = fullConfig.hotkeys || []
@@ -1569,14 +1575,15 @@ function reloadAllFromConfig() {
   loadHotkeys()
   loadTriggers()
   loadMacros()
-  output(`↻ config.js recargado (${hotkeyMap.size} hotkey(s), ${triggerList.length} trigger(s), ${macroMap.size} macro(s)).`)
+  output(`↻ config.js reloaded (${hotkeyMap.size} hotkey(s), ${triggerList.length} trigger(s), ${macroMap.size} macro(s)).`)
 }
 
 initChatLog()
 accounts.forEach((cfg) => attemptConnect(cfg))
 startWebServer()
-// Nota: "accounts" (las cuentas en sí) NO se recarga en caliente al guardar
-// config.js — solo hotkeys/triggers/macros. Cambiar cuentas requiere
-// reiniciar el proceso, igual que antes cuando vivían en su propio fichero.
+// Note: "accounts" (the accounts themselves) are NOT hot-reloaded when
+// config.js is saved — only hotkeys/triggers/macros. Changing accounts
+// requires restarting the process, just like before when they lived in
+// their own file.
 watchConfigReload('config.js', reloadAllFromConfig)
 prompt()

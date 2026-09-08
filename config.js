@@ -1,16 +1,16 @@
 // ─────────────────────────────────────────────────────────────────────────
-// CONFIG UNIFICADO — antes esto estaba repartido en config.js / hotkeys.js /
-// triggers.js / macros.js. Ahora TODO vive aquí en 4 bloques:
+// UNIFIED CONFIG — this used to be split across config.js / hotkeys.js /
+// triggers.js / macros.js. Now EVERYTHING lives here in 4 blocks:
 //
 //   module.exports = {
-//     accounts: [ ... ],   // cuentas a controlar (obligatorio)
-//     hotkeys:  [ ... ],   // atajos de teclado (opcional, [] si no usas ninguno)
-//     triggers: [ ... ],   // triggers de chat  (opcional, [] si no usas ninguno)
-//     macros:   { ... },   // macros de tienda  (opcional, {} si no usas ninguno)
+//     accounts: [ ... ],   // accounts to control (required)
+//     hotkeys:  [ ... ],   // keyboard shortcuts (optional, [] if unused)
+//     triggers: [ ... ],   // chat triggers      (optional, [] if unused)
+//     macros:   { ... },   // shop macros        (optional, {} if unused)
 //   }
 //
-// Se recarga en caliente (hotkeys/triggers/macros) al guardar el archivo, o a
-// mano con /reload, /reloadhotkeys, /reloadtriggers, /reloadmacros.
+// Hotkeys/triggers/macros are hot-reloaded when the file is saved, or
+// manually with /reload, /reloadhotkeys, /reloadtriggers, /reloadmacros.
 // ─────────────────────────────────────────────────────────────────────────
 
 module.exports = {
@@ -18,10 +18,10 @@ module.exports = {
   // ─── accounts ─────────────────────────────────────────────────────────
   accounts: [
     {
-      id: "cuenta1",
-      host: "servidor.net",
+      id: "account1",
+      host: "server.net",
       port: 25565,
-      username: "cuenta1",
+      username: "account1",
       version: "1.20.4",
       password: "",
       auth: "offline",

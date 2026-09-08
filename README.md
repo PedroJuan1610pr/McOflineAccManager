@@ -9,8 +9,9 @@
 A Node.js console (CLI) application that connects and controls **several
 Minecraft accounts at once** (multi-bot) against the same server, using the
 [`mineflayer`](https://github.com/PrismarineJS/mineflayer) library. Built to
-farm/automate actions on a specific server (`widowmc.net`, a
-"gems"/economy-type server).
+farm/automate actions on a specific server (a "gems"/economy-type
+server — the host and API endpoint are placeholders in this copy of the
+project; set your own in `config.js`/`multibot.js`).
 
 It has three control surfaces over the same accounts:
 
@@ -130,7 +131,7 @@ the web panel — all of them converge here.
 | `/dropall` | Drops the whole inventory. |
 | `/dropallgui` | Drops the whole contents of the open window + inventory (slot by slot, "drop stack" mode). |
 | `/multi [number]` | Without an argument: shows the current gem multiplier (`cfg.multi`). With an argument: changes it (informational only, reflected in the web panel). |
-| `/paygemas <name>` | Checks the account's gems via the public API (`api.widowmc.net`) and sends `/gemas pagar <name> <gems>`. |
+| `/paygemas <name>` | Checks the account's gems via the server's public API and sends `/gemas pagar <name> <gems>`. |
 | *any other text* | Sent as-is as a chat message (`bot.chat(trimmed)`). |
 
 ## 7. Configurable automations: hotkeys and triggers

@@ -1,34 +1,34 @@
 // ─── history.js ───────────────────────────────────────────────────────────
-// Persistencia del histórico de gemas generadas (comando /paygemas).
+// Persistence of the generated-gems history (/paygemas command).
 //
-// Antes este historial solo vivía en el localStorage del navegador: se
-// perdía al cambiar de dispositivo, al limpiar datos del navegador, o
-// simplemente no existía hasta que el navegador procesaba las líneas de log.
+// This history used to live only in the browser's localStorage: it was
+// lost when switching devices, when clearing browser data, or it simply
+// didn't exist until the browser processed the log lines.
 //
-// Este módulo guarda cada pago en un fichero JSON dentro de public/
-// (gems-history.json), así que:
-//   - El panel web recupera el mismo histórico lo abras desde donde lo
-//     abras (no depende del navegador/dispositivo).
-//   - Sobrevive a reinicios del proceso (node multibot.js).
+// This module saves each payment to a JSON file inside public/
+// (gems-history.json), so that:
+//   - The web panel gets the same history back regardless of where you
+//     open it from (it doesn't depend on the browser/device).
+//   - It survives process restarts (node multibot.js).
 //
-// No sabe nada de WebSockets ni de Express: solo carga/guarda datos en
-// disco. multibot.js es quien lo usa y se encarga de avisar a los clientes
-// conectados (broadcast) cuando hay una entrada nueva o se borra el
-// histórico.
+// It knows nothing about WebSockets or Express: it only loads/saves data
+// to disk. multibot.js is the one that uses it and takes care of notifying
+// connected clients (broadcast) when there's a new entry or the history
+// gets cleared.
 // ─────────────────────────────────────────────────────────────────────────
 
 const fs = require('fs')
 const path = require('path')
 
-// Se guarda DENTRO de public/ tal y como se pidió, para que sea el mismo
-// fichero que ya sirve express.static(). Ojo: eso también significa que es
-// descargable directamente desde el panel (ej. http://<host>:<puerto>/gems-history.json),
-// igual que el resto de contenido de public/ — no hay nada sensible en él
-// (solo nombre de bot, nombre del destinatario y cantidad de gemas), pero
-// merece la pena tenerlo en cuenta si el panel se expone fuera de la LAN.
+// Saved INSIDE public/ as requested, so it's the same file already served
+// by express.static(). Note: this also means it's directly downloadable
+// from the panel (e.g. http://<host>:<port>/gems-history.json), just like
+// the rest of public/'s content — there's nothing sensitive in it (only
+// bot name, recipient name, and gem amount), but it's worth keeping in
+// mind if the panel is exposed outside the LAN.
 const HISTORY_PATH = path.join(__dirname, 'public', 'gems-history.json')
 
-// Límite de entradas guardadas para que el fichero no crezca sin límite.
+// Maximum number of stored entries so the file doesn't grow without bound.
 const MAX_ENTRIES = 3000
 
 function loadFromDisk() {
@@ -37,30 +37,30 @@ function loadFromDisk() {
     const parsed = JSON.parse(raw)
     return Array.isArray(parsed) ? parsed : []
   } catch {
-    // No existe todavía (primera vez) o está corrupto/ilegible: empezamos
-    // de cero en vez de tirar el proceso abajo.
+    // Doesn't exist yet (first run) or is corrupted/unreadable: start
+    // from scratch instead of crashing the process.
     return []
   }
 }
 
-// Estado en memoria, cargado una vez al arrancar el proceso.
+// In-memory state, loaded once when the process starts.
 let history = loadFromDisk()
 
 function saveToDisk() {
   try {
     fs.writeFileSync(HISTORY_PATH, JSON.stringify(history))
   } catch (err) {
-    console.error(`⚠ No se pudo guardar ${HISTORY_PATH}: ${err.message}`)
+    console.error(`⚠ Could not save ${HISTORY_PATH}: ${err.message}`)
   }
 }
 
-// Devuelve el histórico completo (array de { ts, botId, target, gems }).
+// Returns the full history (array of { ts, botId, target, gems }).
 function getAll() {
   return history
 }
 
-// Añade una entrada nueva, recorta al máximo y persiste en disco.
-// Devuelve la propia entrada (por comodidad, para poder usarla en el broadcast).
+// Adds a new entry, trims to the max, and persists to disk.
+// Returns the entry itself (for convenience, so it can be used in the broadcast).
 function add(entry) {
   history.push(entry)
   if (history.length > MAX_ENTRIES) history = history.slice(-MAX_ENTRIES)
@@ -68,7 +68,7 @@ function add(entry) {
   return entry
 }
 
-// Vacía el histórico (botón "Borrar historial" del panel) y persiste.
+// Clears the history (the panel's "Clear history" button) and persists it.
 function clear() {
   history = []
   saveToDisk()

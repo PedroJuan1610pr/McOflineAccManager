@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="es">
+<html lang="en">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -144,7 +144,7 @@
   .row { display: flex; gap: 8px; }
   .row.wrap { flex-wrap: wrap; }
 
-  /* ── Acciones globales ──────────────────────────────────────────── */
+  /* ── Global actions ──────────────────────────────────────────── */
   .actions-row { display: flex; gap: 10px; margin-bottom: 16px; }
   .actions-row button { flex: 1; padding: 10px; }
   .send-block { border-top: 1px solid var(--border); padding-top: 14px; margin-top: 14px; }
@@ -156,7 +156,7 @@
 
   .quick-grid { display: flex; flex-wrap: wrap; gap: 7px; }
 
-  /* ── Cuentas ────────────────────────────────────────────────────── */
+  /* ── Accounts ────────────────────────────────────────────────────── */
   .acc-filter { font-size: 12px; padding: 6px 9px; width: auto; }
   .acc-row {
     display: flex; align-items: center; gap: 10px; padding: 10px 4px;
@@ -184,7 +184,7 @@
   }
   .acc-edit label.field { margin-bottom: 4px; }
 
-  /* ── Consola de cuenta ──────────────────────────────────────────── */
+  /* ── Account console ──────────────────────────────────────────── */
   #log {
     height: 260px; overflow-y: auto; padding: 12px 14px;
     font-family: 'SF Mono', Consolas, Menlo, monospace; font-size: 12px; line-height: 1.55;
@@ -196,7 +196,7 @@
   #log .empty { color: var(--dim); font-style: italic; }
   form#cmdForm { display: flex; gap: 8px; padding: 12px 14px; }
 
-  /* ── Tracker de gemas ───────────────────────────────────────────── */
+  /* ── Gems tracker ───────────────────────────────────────────── */
   .gems-hero { display: flex; gap: 18px; flex-wrap: wrap; margin-bottom: 16px; }
   .gems-hero .metric { flex: 1; min-width: 110px; }
   .gems-hero .metric .n { font-size: 24px; font-weight: 800; color: var(--cyan); }
@@ -224,7 +224,7 @@
   .payout-item .g { color: var(--cyan); font-weight: 700; white-space: nowrap; }
   .empty-note { color: var(--dim); font-size: 12px; font-style: italic; padding: 6px 0; }
 
-  /* ── Clan top ───────────────────────────────────────────────────── */
+  /* ── Clan leaderboard ───────────────────────────────────────────────────── */
   .clan-card { padding: 7px 4px; border-radius: var(--radius-sm); display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--border); }
   .clan-card:last-child { border-bottom: none; }
   .clan-card .rank { width: 20px; font-size: 11px; color: var(--muted); flex-shrink: 0; text-align: right; }
@@ -246,7 +246,7 @@
 
 <div id="splash">
   <span class="dot" id="splashDot"></span>
-  <span id="splashText">Conectando con el panel...</span>
+  <span id="splashText">Connecting to the panel...</span>
 </div>
 
 <header style="display:none" id="appHeader">
@@ -257,7 +257,7 @@
   </div>
   <div class="header-right">
     <span class="host" id="wsHost">—</span>
-    <span class="ws-pill"><span class="dot" id="wsDot"></span><span id="wsStatus">conectando...</span></span>
+    <span class="ws-pill"><span class="dot" id="wsDot"></span><span id="wsStatus">connecting...</span></span>
   </div>
 </header>
 
@@ -266,74 +266,74 @@
   <div class="stat-grid">
     <div class="stat-card c-red">
       <div class="val" id="statConnected">0</div>
-      <div class="lbl">bots conectados</div>
+      <div class="lbl">bots connected</div>
     </div>
     <div class="stat-card c-orange">
       <div class="val" id="statTotal">0</div>
-      <div class="lbl">cuentas configuradas</div>
+      <div class="lbl">accounts configured</div>
     </div>
     <div class="stat-card c-purple">
       <div class="val" id="statMulti">x0</div>
-      <div class="lbl">multiplicador total</div>
+      <div class="lbl">total multiplier</div>
     </div>
     <div class="stat-card c-green">
       <div class="val" id="statUptime">0s</div>
-      <div class="lbl">panel activo</div>
+      <div class="lbl">panel active</div>
     </div>
   </div>
 
   <div class="live-bar">
-    <span class="gems">💎 gemas en cuentas: <b id="liveGems">—</b></span>
+    <span class="gems">💎 gems across accounts: <b id="liveGems">—</b></span>
     <span class="multi">multi: <b id="liveMulti">x0</b></span>
     <span class="rate">⏱ <b id="liveRateH">0</b>/h</span>
     <span class="rate">📅 <b id="liveRateD">0</b>/d</span>
   </div>
 
   <div class="grid-2">
-    <!-- ── Columna izquierda ─────────────────────────────────────── -->
+    <!-- ── Left column ─────────────────────────────────────── -->
     <div>
       <div class="panel">
-        <div class="head"><h2>Acciones globales</h2></div>
+        <div class="head"><h2>Global actions</h2></div>
         <div class="body">
           <div class="actions-row">
-            <button class="primary" id="btnConnectAll">Conectar todas</button>
-            <button class="danger" id="btnDisconnectAll">Desconectar todas</button>
+            <button class="primary" id="btnConnectAll">Connect all</button>
+            <button class="danger" id="btnDisconnectAll">Disconnect all</button>
           </div>
 
           <div class="send-block">
-            <div class="lbl"><span class="num">1</span>Enviar a todos</div>
-            <div class="hint">El texto se manda a todos los bots conectados. Usa <code>/</code> al principio solo cuando sea un comando.</div>
+            <div class="lbl"><span class="num">1</span>Send to all</div>
+            <div class="hint">The text is sent to every connected bot. Start with <code>/</code> only when it's a command.</div>
             <div class="row">
-              <input type="text" id="broadcastInput" placeholder="Ejemplo: /spawn o Hola a todos" />
-              <button class="primary" id="btnBroadcast">Enviar a todos</button>
+              <input type="text" id="broadcastInput" placeholder="Example: /spawn or Hello everyone" />
+              <button class="primary" id="btnBroadcast">Send to all</button>
             </div>
           </div>
 
           <div class="send-block">
-            <div class="lbl"><span class="num">2</span>Enviar a un bot</div>
-            <div class="hint">Selecciona la cuenta, escribe el mensaje y se envía solo a esa cuenta.</div>
-            <label class="field">BOT DE DESTINO</label>
+            <div class="lbl"><span class="num">2</span>Send to one bot</div>
+            <div class="hint">Pick the account, type the message, and it's sent only to that account.</div>
+            <label class="field">TARGET BOT</label>
             <select id="targetSelect" style="margin-bottom:8px;"></select>
             <div class="row">
-              <input type="text" id="targetInput" placeholder="Ejemplo: /tpa jugador o Hola" />
-              <button class="primary" id="btnSendOne">Enviar al bot</button>
+              <input type="text" id="targetInput" placeholder="Example: /tpa player or Hi" />
+              <button class="primary" id="btnSendOne">Send to bot</button>
             </div>
           </div>
 
           <div class="send-block">
-            <div class="lbl"><span class="num">3</span>Comandos rápidos</div>
-            <div class="hint">Se cargan en el envío global (a todos los conectados).</div>
+            <div class="lbl"><span class="num">3</span>Quick commands</div>
+            <div class="hint">Loaded into the "send to all" field (goes to everyone connected).</div>
             <div class="quick-grid" id="quickCommands"></div>
           </div>
 
           <div class="send-block">
-            <div class="lbl"><span class="num">4</span>Vaciar gemas (/paygemas)</div>
-            <div class="hint">Consulta las gemas actuales de la cuenta y las paga íntegras al nombre indicado. Queda registrado en el tracker de abajo.</div>
-            <label class="field">NOMBRE DEL DESTINATARIO</label>
-            <input type="text" id="paygemasTarget" placeholder="Ejemplo: PedroJuan1610" style="margin-bottom:8px;" />
+            <div class="lbl"><span class="num">4</span>Pay out gems (/paygemas)</div>
+            <div class="hint">Checks the account's current gems and pays them in full to the given name. Logged in the tracker below.</div>
+            <label class="field">RECIPIENT NAME</label>
+            <input type="text" id="paygemasTarget" placeholder="Example: SomePlayer123" style="margin-bottom:8px;" />
             <div class="row">
-              <button id="btnPaygemasOne">Pagar (bot seleccionado)</button>
-              <button class="primary" id="btnPaygemasAll">Pagar (todas las cuentas)</button>
+              <button id="btnPaygemasOne">Pay (selected bot)</button>
+              <button class="primary" id="btnPaygemasAll">Pay (all accounts)</button>
             </div>
           </div>
         </div>
@@ -342,17 +342,17 @@
       <div class="panel">
         <div class="head">
           <div>
-            <h2>💎 Gemas generadas</h2>
-            <div class="sub">Se registra cada vez que se ejecuta <code>/paygemas</code></div>
+            <h2>💎 Gems paid out</h2>
+            <div class="sub">Logged every time <code>/paygemas</code> runs</div>
           </div>
-          <button class="ghost small" id="btnClearTracker">Borrar historial</button>
+          <button class="ghost small" id="btnClearTracker">Clear history</button>
         </div>
         <div class="body">
           <div class="gems-hero">
-            <div class="metric"><div class="n" id="trkToday">0</div><div class="l">hoy</div></div>
-            <div class="metric"><div class="n" id="trkWeek">0</div><div class="l">últimos 7 días</div></div>
-            <div class="metric"><div class="n" id="trkTotal">0</div><div class="l">histórico</div></div>
-            <div class="metric"><div class="n" id="trkCount">0</div><div class="l">pagos registrados</div></div>
+            <div class="metric"><div class="n" id="trkToday">0</div><div class="l">today</div></div>
+            <div class="metric"><div class="n" id="trkWeek">0</div><div class="l">last 7 days</div></div>
+            <div class="metric"><div class="n" id="trkTotal">0</div><div class="l">all time</div></div>
+            <div class="metric"><div class="n" id="trkCount">0</div><div class="l">payouts logged</div></div>
           </div>
           <div class="chart" id="trkChart"></div>
           <div class="chart-labels" id="trkChartLabels"></div>
@@ -361,19 +361,19 @@
       </div>
     </div>
 
-    <!-- ── Columna derecha ───────────────────────────────────────── -->
+    <!-- ── Right column ───────────────────────────────────────── -->
     <div>
       <div class="panel">
         <div class="head">
           <div>
-            <h2>Cuentas</h2>
-            <div class="sub">Control individual de cada cuenta.</div>
+            <h2>Accounts</h2>
+            <div class="sub">Individual control for each account.</div>
           </div>
           <select class="acc-filter" id="accFilter">
-            <option value="all">Todas</option>
-            <option value="connected">Conectadas</option>
-            <option value="disconnected">Desconectadas</option>
-            <option value="muted">Silenciadas</option>
+            <option value="all">All</option>
+            <option value="connected">Connected</option>
+            <option value="disconnected">Disconnected</option>
+            <option value="muted">Muted</option>
           </select>
         </div>
         <div class="body" id="accountList" style="padding-top:6px;"></div>
@@ -381,26 +381,26 @@
 
       <div class="panel">
         <div class="head">
-          <div><h2>Consola — <span id="selTitle">selecciona una cuenta</span></h2></div>
+          <div><h2>Console — <span id="selTitle">select an account</span></h2></div>
           <div class="row" style="gap:6px;">
-            <button class="small" id="btnConsoleConnect">Conectar</button>
-            <button class="small danger" id="btnConsoleDisconnect">Desconectar</button>
-            <button class="small ghost" id="btnConsoleMute">Silenciar</button>
+            <button class="small" id="btnConsoleConnect">Connect</button>
+            <button class="small danger" id="btnConsoleDisconnect">Disconnect</button>
+            <button class="small ghost" id="btnConsoleMute">Mute</button>
           </div>
         </div>
-        <div id="log"><div class="empty">Selecciona una cuenta en "Cuentas" para ver su chat...</div></div>
+        <div id="log"><div class="empty">Select an account in "Accounts" to see its chat...</div></div>
         <form id="cmdForm">
-          <input type="text" id="cmdInput" placeholder="Comando o mensaje (Enter para enviar)" autocomplete="off" />
-          <button class="primary" type="submit">Enviar</button>
+          <input type="text" id="cmdInput" placeholder="Command or message (Enter to send)" autocomplete="off" />
+          <button class="primary" type="submit">Send</button>
         </form>
       </div>
 
       <div class="panel">
         <div class="head">
-          <div><h2>Top clan</h2></div>
+          <div><h2>Clan leaderboard</h2></div>
           <div class="row" style="gap:6px;">
-            <input type="text" id="clanSlugInput" value="gems" style="width:80px; padding:5px 8px; font-size:11px;" title="slug del clan en la API" />
-            <button class="small" id="btnClanRefresh" title="Actualizar">↻</button>
+            <input type="text" id="clanSlugInput" value="gems" style="width:80px; padding:5px 8px; font-size:11px;" title="clan slug in the API" />
+            <button class="small" id="btnClanRefresh" title="Refresh">↻</button>
           </div>
         </div>
         <div class="body" id="clanTopList" style="padding-top:6px;"></div>
@@ -411,19 +411,19 @@
 
 <script>
 // ══════════════════════════════════════════════════════════════════════
-// Estado base (idéntico protocolo WS que ya usa multibot.js)
+// Base state (same WS protocol already used by multibot.js)
 // ══════════════════════════════════════════════════════════════════════
 let ws = null
-let accounts = []        // snapshot del servidor
-let selectedId = null     // cuenta elegida en la consola
-const logsByAccount = {}  // id -> array de {text, sys}
+let accounts = []        // server snapshot
+let selectedId = null     // account chosen in the console
+const logsByAccount = {}  // id -> array of {text, sys}
 const MAX_LOG_LINES = 500
 let wsConnectedAt = null
 
 function el(sel) { return document.querySelector(sel) }
 function esc(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])) }
 
-// ── Gemas por cuenta (API externa, vía fetch directo desde el navegador) ──
+// ── Gems per account (external API, via a direct fetch from the browser) ──
 const gemsCache = {}
 const GEMS_TTL_MS = 60000
 
@@ -433,7 +433,7 @@ function fetchGems(username) {
   const cached = gemsCache[key]
   if (cached && (cached.loading || Date.now() - cached.ts < GEMS_TTL_MS)) return
   gemsCache[key] = { ...(cached || {}), loading: true }
-  fetch(`https://api.widowmc.net/api/v1/players/${encodeURIComponent(username)}`)
+  fetch(`https://api.yourserver.net/api/v1/players/${encodeURIComponent(username)}`)
     .then(res => { if (!res.ok) throw new Error('bad status'); return res.json() })
     .then(data => {
       gemsCache[key] = { gems: data?.stats?.gems ?? null, loading: false, error: false, ts: Date.now() }
@@ -448,20 +448,20 @@ function gemsPill(username) {
   const cached = gemsCache[(username || '').toLowerCase()]
   if (!cached || cached.loading) return '<span class="tag-pill gems">💎 …</span>'
   if (cached.error || cached.gems == null) return '<span class="tag-pill gems">💎 —</span>'
-  return `<span class="tag-pill gems">💎 ${cached.gems.toLocaleString('es-ES')}</span>`
+  return `<span class="tag-pill gems">💎 ${cached.gems.toLocaleString('en-US')}</span>`
 }
 
 // ══════════════════════════════════════════════════════════════════════
-// Tracker de gemas generadas (basado en las líneas de log de /paygemas)
-// Cuando el backend ejecuta /paygemas, emite por log: "Enviado: /gemas
-// pagar <nombre> <gemas>" — esa es la cantidad extraída en ese momento.
-// El propio backend guarda cada evento en public/gems-history.json (ver
-// multibot.js), así que aquí solo mantenemos una copia en memoria que se
-// rellena con lo que manda el servidor por WebSocket ('gems_history' al
-// conectar, 'gems_history_add' en cada /paygemas nuevo). Ya no se usa
-// localStorage: el histórico es el mismo para cualquier navegador/dispositivo
-// que abra el panel, y sobrevive a reinicios del proceso.
-const PAYGEMAS_RE = /^Enviado:\s*\/gemas pagar (\S+) ([\d.]+)\s*$/i
+// Gems-paid-out tracker (based on /paygemas log lines)
+// When the backend runs /paygemas, it logs: "Sent: /gemas pagar <name>
+// <gems>" — that's the amount extracted at that moment. The backend
+// itself saves each event to public/gems-history.json (see multibot.js),
+// so here we just keep an in-memory copy that's populated from what the
+// server sends over WebSocket ('gems_history' on connect,
+// 'gems_history_add' on every new /paygemas). localStorage is no longer
+// used: the history is the same for any browser/device that opens the
+// panel, and it survives process restarts.
+const PAYGEMAS_RE = /^Sent:\s*\/gemas pagar (\S+) ([\d.]+)\s*$/i
 
 let gemsHistory = []
 
@@ -471,7 +471,7 @@ function dayKey(ts) {
 }
 function dayLabel(ts) {
   const d = new Date(ts)
-  return d.toLocaleDateString('es-ES', { day: '2-digit', month: 'short' }).replace('.', '')
+  return d.toLocaleDateString('en-US', { day: '2-digit', month: 'short' }).replace('.', '')
 }
 
 function renderGemsTracker() {
@@ -492,10 +492,10 @@ function renderGemsTracker() {
   const weekTotal = gemsHistory.filter(e => e.ts >= weekAgo).reduce((s, e) => s + e.gems, 0)
   const todayTotal = totalsByDay[todayKey] || 0
 
-  el('#trkToday').textContent = Math.round(todayTotal).toLocaleString('es-ES')
-  el('#trkWeek').textContent = Math.round(weekTotal).toLocaleString('es-ES')
-  el('#trkTotal').textContent = Math.round(total).toLocaleString('es-ES')
-  el('#trkCount').textContent = gemsHistory.length.toLocaleString('es-ES')
+  el('#trkToday').textContent = Math.round(todayTotal).toLocaleString('en-US')
+  el('#trkWeek').textContent = Math.round(weekTotal).toLocaleString('en-US')
+  el('#trkTotal').textContent = Math.round(total).toLocaleString('en-US')
+  el('#trkCount').textContent = gemsHistory.length.toLocaleString('en-US')
 
   const max = Math.max(1, ...days.map(d => totalsByDay[d]))
   const chart = el('#trkChart')
@@ -503,15 +503,15 @@ function renderGemsTracker() {
   if (!gemsHistory.length) {
     chart.innerHTML = ''
     labels.innerHTML = ''
-    el('#trkList').innerHTML = '<div class="empty-note">Todavía no se ha registrado ningún /paygemas. En cuanto se ejecute, aparecerá aquí.</div>'
+    el('#trkList').innerHTML = '<div class="empty-note">No /paygemas has been logged yet. It will show up here once one runs.</div>'
     return
   }
   chart.innerHTML = days.map(d => {
     const v = totalsByDay[d]
     const h = Math.max(2, Math.round((v / max) * 100))
     return `<div class="bar-wrap">
-      <span class="v">${v ? Math.round(v).toLocaleString('es-ES') : ''}</span>
-      <div class="bar${d === todayKey ? ' today' : ''}" style="height:${h}%" title="${v.toLocaleString('es-ES')} gemas"></div>
+      <span class="v">${v ? Math.round(v).toLocaleString('en-US') : ''}</span>
+      <div class="bar${d === todayKey ? ' today' : ''}" style="height:${h}%" title="${v.toLocaleString('en-US')} gems"></div>
     </div>`
   }).join('')
   labels.innerHTML = days.map(d => `<span>${dayLabel(d + 'T12:00:00')}</span>`).join('')
@@ -519,21 +519,21 @@ function renderGemsTracker() {
   const recent = gemsHistory.slice(-8).reverse()
   el('#trkList').innerHTML = recent.map(e => {
     const mins = Math.round((Date.now() - e.ts) / 60000)
-    const when = mins < 1 ? 'ahora' : mins < 60 ? `hace ${mins}m` : `hace ${Math.round(mins / 60)}h`
+    const when = mins < 1 ? 'now' : mins < 60 ? `${mins}m ago` : `${Math.round(mins / 60)}h ago`
     return `<div class="payout-item">
       <span><b>${esc(e.botId)}</b> → ${esc(e.target)} <span style="color:var(--dim)">· ${when}</span></span>
-      <span class="g">💎 ${Math.round(e.gems).toLocaleString('es-ES')}</span>
+      <span class="g">💎 ${Math.round(e.gems).toLocaleString('en-US')}</span>
     </div>`
   }).join('')
 }
 
 el('#btnClearTracker').addEventListener('click', () => {
-  if (!confirm('¿Borrar todo el historial de gemas generadas? Esta acción no se puede deshacer.')) return
+  if (!confirm('Clear the entire gems-paid-out history? This action cannot be undone.')) return
   send({ type: 'gems_history_clear' })
 })
 
 // ══════════════════════════════════════════════════════════════════════
-// Top de clan (idéntico a la versión anterior, resuelto en el backend)
+// Clan leaderboard (same as the previous version, resolved on the backend)
 // ══════════════════════════════════════════════════════════════════════
 const CLAN_TTL_MS = 60000
 let clanTopState = { loading: false, error: null, members: [], total: 0, known: 0, count: 0, ts: 0 }
@@ -560,11 +560,11 @@ function renderClanTop() {
   const wrap = el('#clanTopList')
   if (!wrap) return
   if (!clanTopSearched) {
-    wrap.innerHTML = '<div class="empty-note">Escribe el slug de un clan y pulsa ↻ para buscar.</div>'
+    wrap.innerHTML = '<div class="empty-note">Type a clan slug and press ↻ to search.</div>'
     return
   }
   if (clanTopState.loading && !clanTopState.members.length) {
-    wrap.innerHTML = '<div class="empty-note">Cargando...</div>'
+    wrap.innerHTML = '<div class="empty-note">Loading...</div>'
     return
   }
   if (clanTopState.error) {
@@ -572,21 +572,21 @@ function renderClanTop() {
     return
   }
   if (!clanTopState.members.length) {
-    wrap.innerHTML = '<div class="empty-note">Sin datos todavía.</div>'
+    wrap.innerHTML = '<div class="empty-note">No data yet.</div>'
     return
   }
   const myUsernames = new Set(accounts.map(a => (a.username || '').toLowerCase()))
   const totalKnownAll = clanTopState.known === clanTopState.count
-  const totalHtml = `<div class="clan-total">💎 Total clan: <b>${clanTopState.total.toLocaleString('es-ES')}</b>
-    ${totalKnownAll ? '' : `<span class="hint">(${clanTopState.known}/${clanTopState.count} miembros)</span>`}</div>`
+  const totalHtml = `<div class="clan-total">💎 Clan total: <b>${clanTopState.total.toLocaleString('en-US')}</b>
+    ${totalKnownAll ? '' : `<span class="hint">(${clanTopState.known}/${clanTopState.count} members)</span>`}</div>`
   const warnHtml = (!totalKnownAll && clanTopState.count)
-    ? `<div class="empty-note" style="color:var(--orange);">${clanTopState.count - clanTopState.known}/${clanTopState.count} miembros no se pudieron consultar — el total puede estar incompleto.</div>`
+    ? `<div class="empty-note" style="color:var(--orange);">${clanTopState.count - clanTopState.known}/${clanTopState.count} members could not be queried — the total may be incomplete.</div>`
     : ''
   wrap.innerHTML = totalHtml + warnHtml + clanTopState.members.map((m, i) => `
     <div class="clan-card${myUsernames.has((m.name || '').toLowerCase()) ? ' mine' : ''}">
       <span class="rank">#${i + 1}</span>
       <span class="name">${esc(m.name)}${m.online ? '<span class="online-mark">● online</span>' : ''}</span>
-      <span class="gems${m.gems == null ? ' err' : ''}">💎 ${m.gems != null ? m.gems.toLocaleString('es-ES') : '—'}</span>
+      <span class="gems${m.gems == null ? ' err' : ''}">💎 ${m.gems != null ? m.gems.toLocaleString('en-US') : '—'}</span>
     </div>`).join('')
 }
 el('#btnClanRefresh').addEventListener('click', () => requestClanTop(true))
@@ -594,7 +594,7 @@ el('#clanSlugInput').addEventListener('keydown', (e) => { if (e.key === 'Enter')
 setInterval(() => requestClanTop(), CLAN_TTL_MS)
 
 // ══════════════════════════════════════════════════════════════════════
-// Conexión WebSocket
+// WebSocket connection
 // ══════════════════════════════════════════════════════════════════════
 connectWs()
 setInterval(() => accounts.forEach(a => fetchGems(a.username)), GEMS_TTL_MS)
@@ -611,12 +611,12 @@ function connectWs() {
     el('#appHeader').style.display = 'flex'
     el('#appWrap').style.display = 'block'
     el('#wsDot').className = 'dot on'
-    el('#wsStatus').textContent = 'conectado'
+    el('#wsStatus').textContent = 'connected'
     el('#wsHost').textContent = location.host
   })
   ws.addEventListener('close', () => {
     el('#wsDot').className = 'dot off'
-    el('#wsStatus').textContent = 'desconectado — reintentando...'
+    el('#wsStatus').textContent = 'disconnected — retrying...'
     setTimeout(() => connectWs(), 2000)
   })
   ws.addEventListener('message', (ev) => handleServerMessage(JSON.parse(ev.data)))
@@ -660,7 +660,7 @@ function renderAll() {
   renderLiveBar()
 }
 
-// ── Stats + barra de totales en vivo ──────────────────────────────────
+// ── Stats + live totals bar ──────────────────────────────────
 function renderStats() {
   const connected = accounts.filter(a => a.connected).length
   const multiSum = accounts.reduce((s, a) => s + (typeof a.multi === 'number' ? a.multi : 0), 0)
@@ -683,11 +683,11 @@ function renderLiveBar() {
   const elapsedMin = (Date.now() - totalsState.syncedAt) / 60000
   const liveGems = Math.round(gemsSum + multiSum * elapsedMin)
   el('#liveGems').textContent = gemsKnown < accounts.length && accounts.length
-    ? `${liveGems.toLocaleString('es-ES')} (${gemsKnown}/${accounts.length})`
-    : liveGems.toLocaleString('es-ES')
+    ? `${liveGems.toLocaleString('en-US')} (${gemsKnown}/${accounts.length})`
+    : liveGems.toLocaleString('en-US')
   el('#liveMulti').textContent = `x${multiSum}`
-  el('#liveRateH').textContent = (multiSum * 60).toLocaleString('es-ES')
-  el('#liveRateD').textContent = (multiSum * 60 * 24).toLocaleString('es-ES')
+  el('#liveRateH').textContent = (multiSum * 60).toLocaleString('en-US')
+  el('#liveRateD').textContent = (multiSum * 60 * 24).toLocaleString('en-US')
 }
 
 function renderUptime() {
@@ -698,7 +698,7 @@ function renderUptime() {
   else el('#statUptime').textContent = `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`
 }
 
-// ── Cuentas ────────────────────────────────────────────────────────────
+// ── Accounts ────────────────────────────────────────────────────────────
 let editingId = null
 let filterMode = 'all'
 el('#accFilter').addEventListener('change', (e) => { filterMode = e.target.value; renderAccounts() })
@@ -711,7 +711,7 @@ function renderAccounts() {
     if (filterMode === 'muted') return a.muted
     return true
   })
-  if (!filtered.length) { list.innerHTML = '<div class="empty-note">No hay cuentas para este filtro.</div>'; return }
+  if (!filtered.length) { list.innerHTML = '<div class="empty-note">No accounts match this filter.</div>'; return }
 
   list.innerHTML = filtered.map((a, i) => `
     <div class="acc-row${a.id === selectedId ? ' selected' : ''}" data-id="${esc(a.id)}">
@@ -727,18 +727,18 @@ function renderAccounts() {
         </div>
       </div>
       <div class="btns">
-        <button class="small btn-toggle" data-id="${esc(a.id)}" data-connected="${a.connected}">${a.connected ? 'Desconectar' : 'Conectar'}</button>
-        <button class="small ghost btn-edit" data-id="${esc(a.id)}">Editar</button>
+        <button class="small btn-toggle" data-id="${esc(a.id)}" data-connected="${a.connected}">${a.connected ? 'Disconnect' : 'Connect'}</button>
+        <button class="small ghost btn-edit" data-id="${esc(a.id)}">Edit</button>
       </div>
     </div>
     ${editingId === a.id ? `
       <div class="acc-edit">
         <div style="flex:1;">
-          <label class="field">MULTIPLICADOR DE GEMAS (/multi)</label>
+          <label class="field">GEM MULTIPLIER (/multi)</label>
           <input type="number" id="editMultiInput" step="0.5" value="${a.multi ?? 1}" />
         </div>
-        <button class="small primary" id="btnEditSave" data-id="${esc(a.id)}">Guardar</button>
-        <button class="small ghost" id="btnEditCancel">Cancelar</button>
+        <button class="small primary" id="btnEditSave" data-id="${esc(a.id)}">Save</button>
+        <button class="small ghost" id="btnEditCancel">Cancel</button>
       </div>` : ''}
   `).join('')
 
@@ -786,20 +786,20 @@ function renderTargetSelect() {
   else if (selectedId) sel.value = selectedId
 }
 
-// ── Consola de la cuenta seleccionada ─────────────────────────────────
+// ── Selected account's console ─────────────────────────────────
 function renderConsoleHead() {
   const a = accounts.find(x => x.id === selectedId)
-  if (!a) { el('#selTitle').textContent = 'selecciona una cuenta'; return }
+  if (!a) { el('#selTitle').textContent = 'select an account'; return }
   el('#selTitle').textContent = `${a.id} · ${a.username}`
   el('#btnConsoleConnect').disabled = a.connected
   el('#btnConsoleDisconnect').disabled = !a.connected
-  el('#btnConsoleMute').textContent = a.muted ? 'Reactivar chat' : 'Silenciar'
+  el('#btnConsoleMute').textContent = a.muted ? 'Unmute' : 'Mute'
 }
 function renderLog() {
   const logDiv = el('#log')
   logDiv.innerHTML = ''
   const lines = logsByAccount[selectedId] || []
-  if (!lines.length) { logDiv.innerHTML = '<div class="empty">(sin mensajes todavía)</div>'; return }
+  if (!lines.length) { logDiv.innerHTML = '<div class="empty">(no messages yet)</div>'; return }
   lines.forEach(l => appendLogLine(l.text, l.sys, l.gemhit, false))
   logDiv.scrollTop = logDiv.scrollHeight
 }
@@ -828,11 +828,11 @@ el('#cmdForm').addEventListener('submit', (e) => {
   input.value = ''
 })
 
-// ── Acciones globales: conectar/desconectar todas ─────────────────────
+// ── Global actions: connect/disconnect all ─────────────────────
 el('#btnConnectAll').addEventListener('click', () => accounts.forEach(a => send({ type: 'connect', id: a.id })))
 el('#btnDisconnectAll').addEventListener('click', () => accounts.forEach(a => send({ type: 'disconnect', id: a.id })))
 
-// ── Enviar a todos ─────────────────────────────────────────────────────
+// ── Send to all ─────────────────────────────────────────────────────
 el('#btnBroadcast').addEventListener('click', doBroadcast)
 el('#broadcastInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') doBroadcast() })
 function doBroadcast() {
@@ -843,7 +843,7 @@ function doBroadcast() {
   input.value = ''
 }
 
-// ── Enviar a un bot ────────────────────────────────────────────────────
+// ── Send to one bot ────────────────────────────────────────────────────
 el('#btnSendOne').addEventListener('click', doSendOne)
 el('#targetInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') doSendOne() })
 function doSendOne() {
@@ -855,11 +855,11 @@ function doSendOne() {
   input.value = ''
 }
 
-// ── Comandos rápidos (comandos fijos de multibot.js + macros de tienda) ──
+// ── Quick commands (fixed multibot.js commands + shop macros) ──
 const QUICK_COMMANDS = [
   '/stats', '/pos', '/inv', '/close', '/drop', '/dropall', '/dropallgui',
   '/autoclick left 100', '/autoclick right 100',
-  '/casco 5', '/peto 5', '/pantbp 5', '/pant 5', '/botas 5',
+  '/helmet 5', '/chestplate 5', '/leggings2 5', '/leggings 5', '/boots 5',
 ]
 el('#quickCommands').innerHTML = QUICK_COMMANDS.map(c => `<button type="button" class="chip" data-cmd="${esc(c)}">${esc(c)}</button>`).join('')
 el('#quickCommands').addEventListener('click', (e) => {
@@ -869,7 +869,7 @@ el('#quickCommands').addEventListener('click', (e) => {
   el('#broadcastInput').focus()
 })
 
-// ── Vaciar gemas (/paygemas) ───────────────────────────────────────────
+// ── Pay out gems (/paygemas) ───────────────────────────────────────────
 el('#btnPaygemasOne').addEventListener('click', () => {
   const target = el('#paygemasTarget').value.trim()
   if (!target || !selectedId) return
@@ -885,7 +885,7 @@ function send(obj) {
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj))
 }
 
-// Primer render del tracker (vacío hasta que llegue 'gems_history' del servidor por WS)
+// First render of the tracker (empty until 'gems_history' arrives from the server over WS)
 renderGemsTracker()
 </script>
 </body>
