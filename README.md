@@ -40,10 +40,12 @@ accounts from another device on the local network.
 
 | File               | Role                                                                 |
 |------------------------|----------------------------------------------------------------------|
-| `multibot.js`          | **Entry point and the whole engine**: bot connections, console, commands, hotkeys, triggers, web panel. Everything in a single file (~900 lines). |
+| `multibot.js`          | **Entry point and the whole engine**: bot connections, console, commands, hotkeys, triggers, web panel. Everything in a single file (~1600 lines). |
 | `config.js`             | **Unified config**: exports `{ accounts, hotkeys, triggers, macros }`. `accounts` (accounts to control: credentials, host, multi, autoRelog, spawnCommand, etc.) is required; `hotkeys`, `triggers`, and `macros` are optional (empty arrays/object if unused). They used to live in separate files (`hotkeys.js`/`triggers.js`/`macros.js`); now everything is in this single file. |
-| `webconfig.js`          | Port and password for the web panel. ⚠️ see section 8 (the password **isn't actually used**). |
+| `history.js`            | **Gems-payment history persistence**: loads `public/gems-history.json` on startup and exposes `add`, `clear`, and `getAll`. Used by `multibot.js` to persist `/paygemas` entries across process restarts and broadcast them to web-panel clients. |
+| `webconfig.js`          | Port and password for the web panel. ⚠️ see section 9 (the password **isn't actually used**). |
 | `public/index.html`     | Static frontend of the web panel (plain HTML+CSS+JS, no build). |
+| `public/gems-history.json` | Persisted payment history written by `history.js`; also directly downloadable from the panel. |
 | `package.json` / `package-lock.json` | npm dependencies. |
 
 There's no `src/` folder, and no modules split by responsibility: **the
@@ -58,38 +60,55 @@ together all the configuration).
   attempted to connect*. Each `session` has:
   ```js
   {
-    cfg,              // the config.js object for that account
-    bot,              // mineflayer instance, or null if disconnected
-    autoClick,        // auto-click helper object (see makeAutoClick)
-    muted,            // bool: whether its chat/log is hidden in console and panel
-    manualDisconnect, // bool: prevents auto-reconnect if manually disconnected
-    reconnectTimer,   // handle of the reconnect retry setTimeout
-    retries,          // number of consecutive reconnection retries
-    lastAutoRegister, // timestamp of the last automatic /register sent
+    cfg,                // the config.js object for that account
+    bot,                // mineflayer instance, or null if disconnected
+    autoClick,          // auto-click helper object (see makeAutoClick)
+    muted,              // bool: whether its chat/log is hidden in console and panel
+    manualDisconnect,   // bool: prevents auto-reconnect if manually disconnected
+    reconnectTimer,     // handle of the reconnect retry setTimeout
+    retries,            // number of consecutive reconnection retries
+    lastAutoRegister,   // timestamp of the last automatic /register sent
+    spawnedThisAttempt, // bool: whether the bot successfully spawned in the current connection attempt (used to distinguish account failures from server-down errors)
+    lastError,          // last Error received from the bot's 'error' event (used together with spawnedThisAttempt to detect server-down situations)
   }
   ```
 - `activeId` — id of the "active" account in the console (the one that
   receives commands typed without `/all`, and the one controlled by the
   `Ctrl+T` menu).
 - `wsClients: Set<WebSocket>` — clients connected to the web panel.
+- `serverGates: Map<host:port, gate>` — one gate per server, used to
+  serialize connection attempts (minimum gap of `MIN_CONNECT_GAP_MS = 15000`ms
+  between attempts to the same server) and to track whether the server is
+  currently considered down.
+- `PRIMARY_ACCOUNT_ID` — id of the first account in `config.js`; used as the
+  sole source for the chat-log file so messages aren't duplicated.
+- `chatLogStream` — writable file stream for the chat log (`chatlog/` folder).
 
 ## 5. Lifecycle of an account (`connect(cfg)`)
 
 1. The `session` is created (or reused) in the `Map`.
 2. `mineflayer.createBot({ host, port, username, version, auth })`.
-3. Bot listeners:
+3. Right after creation, `patchNoisyScoreboardListeners` wraps the internal
+   mineflayer listeners for `scoreboard_score` / `scoreboard_objective`
+   packets in a try/catch to prevent a known library bug from crashing the
+   process.
+4. Bot listeners:
    - `spawn` → logs the connection; if `cfg.password` exists, sends
      `/login <password>`. If the account has `cfg.spawnCommand` (a string or
      array of strings, defined in `config.js`), it's run automatically via
      `runCommand` — with a ~1200ms wait if a `/login` happened, to give the
      server time to process it before sending more commands. Then
-     `broadcastStatus()`.
+     `broadcastStatus()`. A `firstSpawnHandled` flag prevents `/login` and
+     `spawnCommand` from firing again if the server sends multiple position
+     packets in the same session.
    - `message` → server chat text. This is where the following hook in:
      - **auto-register**: if the text contains "register" (regex
        `/register/i`) and `cfg.password` exists, sends
        `/register <pass> <pass>` (with a 5s cooldown to avoid spamming if
        the server prints several lines in a row).
      - **chat triggers** (`handleChatTriggers`) — see section 7.
+     - **chat log**: if this is the primary account, the line is written to
+       the daily log file in `chatlog/` (even if the account is muted).
      - If the account is `muted`, nothing else is printed; otherwise it's
        logged.
      - There's deduplication (`seen` Set + `setImmediate`) to avoid
@@ -103,11 +122,26 @@ together all the configuration).
    - `end` → logs the disconnection, stops auto-click, `broadcastStatus()`,
      sends a Discord notification (`sendDiscordWebhook`), and if it wasn't a
      manual disconnect and `cfg.autoRelog !== false`, schedules a
-     reconnection with backoff (`5s, 10s, 15s...` up to a cap of 60s).
+     reconnection: **15s** before the first retry; **60s** between every
+     subsequent retry. If the bot never managed to spawn and the error looks
+     like a network failure, `markServerDown` is called instead (see
+     section 5.1).
 
-When the process starts, all accounts in `config.js` connect in cascade with
-`CONNECT_DELAY_MS = 9000` ms between each one (to avoid raising suspicion /
-overloading the server's login).
+When the process starts, all accounts in `config.js` call `attemptConnect`
+immediately. Spacing between connections is handled automatically by
+`reserveConnectSlot` (minimum `MIN_CONNECT_GAP_MS = 15000`ms between attempts
+to the same server), so two accounts never connect less than 15s apart.
+
+### 5.1 Server-down detection and recovery
+
+If a connection attempt fails before the bot ever spawns and the error is a
+network-level failure (`ECONNREFUSED`, `ETIMEDOUT`, etc.), `markServerDown`
+is called for that server. From that point:
+
+- Per-account reconnect timers are stopped.
+- A periodic TCP check runs every `SERVER_DOWN_CHECK_INTERVAL_MS = 60000`ms.
+- Once the server responds again, the process waits `SERVER_UP_RESUME_DELAY_MS = 30000`s
+  and then calls `attemptConnect` for every disconnected account on that server.
 
 ## 6. Account commands (`runCommand(session, trimmed)`)
 
@@ -130,7 +164,7 @@ the web panel — all of them converge here.
 | `/drop` | Drops the item in hand. |
 | `/dropall` | Drops the whole inventory. |
 | `/dropallgui` | Drops the whole contents of the open window + inventory (slot by slot, "drop stack" mode). |
-| `/multi [number]` | Without an argument: shows the current gem multiplier (`cfg.multi`). With an argument: changes it (informational only, reflected in the web panel). |
+| `/multi [number]` | Without an argument: shows the current gem multiplier (`cfg.multi`). With an argument: changes it and persists the value to `config.js`. |
 | `/paygemas <name>` | Checks the account's gems via the server's public API and sends `/gemas pagar <name> <gems>`. |
 | *any other text* | Sent as-is as a chat message (`bot.chat(trimmed)`). |
 
@@ -229,6 +263,11 @@ the console: `/macros` command.
 | `/help` | Help listing. |
 | `/hotkeys` | Lists loaded hotkeys. |
 | `/triggers` | Lists loaded chat triggers. |
+| `/macros` | Lists loaded shop macros. |
+| `/reload` | Reloads all of `hotkeys`, `triggers`, and `macros` from `config.js`. |
+| `/reloadhotkeys` | Reloads only the `hotkeys` section. |
+| `/reloadtriggers` | Reloads only the `triggers` section. |
+| `/reloadmacros` | Reloads only the `macros` section. |
 | `/accounts` | Lists accounts from `config.js` and their status (connected/disconnected, which one is active). |
 | `/switch <id>` | Switches the active account. |
 | `/connect <id>` | Connects/reconnects an account (the active one by default). |
@@ -245,13 +284,16 @@ the console: `/macros` command.
   `0.0.0.0` to be reachable from the LAN).
 - When a WS client connects it receives a `snapshot` with
   `accountsSnapshot()` (id, username, connected, muted, active, multi per
-  account).
+  account) and the full gems-payment history from `history.js`.
 - Messages the client can send over WS (`handleWebMessage`):
   - `{ type: 'connect', id }`
   - `{ type: 'disconnect', id }`
   - `{ type: 'mute' | 'unmute', id }`
   - `{ type: 'command', id, text, all? }` → `all: true` runs the command on
     every connected account; otherwise only on `id`.
+  - `{ type: 'gems_history_clear' }` → clears the payment history.
+  - `{ type: 'clantop_request', slug, known }` → fetches the clan gem
+    leaderboard from the server's API and broadcasts the result.
 - The server broadcasts (`broadcast`) `type: 'log'` events (a chat/log line
   from an account) and `type: 'status'` events (updated snapshot) to all
   connected clients.
@@ -259,7 +301,7 @@ the console: `/macros` command.
   cards, active account selector, toolbar, live log console, and a form to
   send commands (with a "to all" option).
 
-## 8/9-bis. ⚠️ Things to keep in mind / technical debt
+## 10. ⚠️ Things to keep in mind / technical debt
 
 - **The web panel has NO real authentication.** `webconfig.js` defines a
   `password`, and the file's comment warns not to expose it outside the
@@ -273,12 +315,13 @@ the console: `/macros` command.
   go unencrypted in the repo itself. If this project is pushed anywhere
   (GitHub, etc.), `config.js` should go in `.gitignore` or be moved to
   environment variables.
-- **Hardcoded Discord webhook** in `multibot.js` (`DISCORD_WEBHOOK_URL`,
-  `DISCORD_USER_ID`): used to notify when an account disconnects. Since it's
-  a secret URL embedded directly in the code (not in
-  `config.js`/`webconfig.js`), anyone with the code can spam that Discord
-  channel. It would be cleaner to move it to an unversioned config file.
-- **Everything lives in a single file (`multibot.js`, ~900 lines)**:
+- **Discord webhook config** in `multibot.js` (`DISCORD_WEBHOOK_URL`,
+  `DISCORD_USER_ID`): used to notify when an account disconnects. Both are
+  empty strings by default (no notification is sent until you fill them in).
+  Since they're embedded directly in the source code rather than in
+  `config.js`/`webconfig.js`, anyone with the code can see or reuse them if
+  you set them. It would be cleaner to move them to an unversioned config file.
+- **Everything lives in a single file (`multibot.js`, ~1600 lines)**:
   connection, console, commands, hotkeys, triggers, and the web server all
   mixed together. It works, but any large change would benefit from
   splitting it into modules (`bot.js`, `commands.js`, hotkeys/triggers
@@ -287,15 +330,20 @@ the console: `/macros` command.
   "mode"/"button" codes directly (`clickWindow(slot, button, mode)`), with
   no abstraction layer — any protocol version change could require touching
   them.
+- **`gems-history.json` is publicly downloadable**: it lives inside
+  `public/` and is served by `express.static`. The file only contains bot
+  names, recipient names, and gem amounts (nothing sensitive), but it's
+  worth keeping in mind if the panel is ever exposed outside the LAN.
 - No automated tests or linter configured.
 
-## 10. How to run it
+## 11. How to run it
 
 ```bash
 npm install
 node multibot.js
 ```
 
-On startup: it connects the accounts from `config.js` in cascade (9s
-between each one), spins up the web panel on `webconfig.js.port`, and
-leaves the interactive console ready (prompt waiting for commands).
+On startup: it connects the accounts from `config.js` (spacing them at least
+15s apart via `reserveConnectSlot`), spins up the web panel on
+`webconfig.js.port`, initializes the chat-log file in `chatlog/`, and leaves
+the interactive console ready (prompt waiting for commands).
